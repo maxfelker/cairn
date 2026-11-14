@@ -152,6 +152,24 @@ function access({ exec = run, cwd, repo, action } = {}) {
   return { ok: true, provider: PROVIDER, target: data.nameWithOwner, permission, issues, allowed };
 }
 
+// Everything the setup check needs, in one call. A failed step leaves the
+// steps after it with that same failure, instead of extra calls that fail
+// the same way.
+function check({ exec = run, cwd } = {}) {
+  const t = target({ exec, cwd });
+  const a = auth({ exec });
+  let acc;
+  if (!t.ok) acc = t;
+  else if (!a.ok) acc = a;
+  else acc = access({ exec, cwd, repo: t.target });
+
+  const first = [t, a, acc].find((r) => !r.ok);
+  const head = first
+    ? { ok: false, code: first.code, message: first.message, fix: first.fix }
+    : { ok: true, provider: PROVIDER };
+  return { ...head, target: t, auth: a, access: acc };
+}
+
 function accessArgs(args) {
   if (args.length === 0) return access();
   if (args.length === 2 && args[0] === '--for') return access({ action: args[1] });
@@ -162,10 +180,11 @@ const commands = {
   target: (args) => (args.length ? null : target()),
   auth: (args) => (args.length ? null : auth()),
   access: accessArgs,
+  check: (args) => (args.length ? null : check()),
 };
 
 if (require.main === module) {
   process.exitCode = cli(commands, process.argv.slice(2));
 }
 
-module.exports = { name: PROVIDER, commands, actions: ACTIONS, parseRemote, target, auth, access };
+module.exports = { name: PROVIDER, commands, actions: ACTIONS, parseRemote, target, auth, access, check };

@@ -210,3 +210,37 @@ test('CLI access rejects malformed arguments', () => {
     assert.equal(r.status, 2, args.join(' '));
   }
 });
+
+test('check combines target, auth, and access for the setup check', () => {
+  const cwd = tempRepo({ origin: 'git@github.com:octo/repo.git' });
+  const hosts = { 'github.com': [ACCOUNT] };
+  const ghReplies = fakeGh({
+    'auth status': { stdout: JSON.stringify({ hosts }) },
+    'repo view': { stdout: JSON.stringify({ nameWithOwner: 'octo/repo', viewerPermission: 'WRITE', hasIssuesEnabled: true }) },
+  });
+  const { run } = require('../skills/cairn/providers/lib.js');
+  const exec = (cmd, args, opts) => (cmd === 'git' ? run(cmd, args, opts) : ghReplies(cmd, args, opts));
+
+  const ready = github.check({ exec, cwd });
+  assert.equal(ready.ok, true);
+  assert.equal(ready.target.target, 'octo/repo');
+  assert.equal(ready.auth.login, 'octo');
+  assert.equal(ready.access.permission, 'WRITE');
+});
+
+test('check surfaces the first gap and does not call gh for a repo it cannot find', () => {
+  let ghCalls = 0;
+  const exec = (cmd, args, opts) => {
+    if (cmd === 'gh') {
+      ghCalls += 1;
+      return { ok: true, stdout: '{"hosts":{}}', stderr: '', missing: false };
+    }
+    return require('../skills/cairn/providers/lib.js').run(cmd, args, opts);
+  };
+  const result = github.check({ exec, cwd: tempRepo() });
+  assert.equal(result.ok, false);
+  assert.equal(result.code, 'NO_REMOTE');
+  assert.equal(result.access.code, 'NO_REMOTE');
+  assert.equal(result.auth.code, 'NOT_LOGGED_IN');
+  assert.equal(ghCalls, 1, 'only auth calls gh');
+});

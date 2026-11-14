@@ -45,12 +45,10 @@ test('at least one provider exists', () => {
 for (const { file, mod } of providers) {
   const base = path.basename(file, '.js');
 
-  test(`${base}: exports a name, a guidance file, and only contract commands`, () => {
+  test(`${base}: exports a name, a guidance file, and every contract command`, () => {
     assert.equal(mod.name, base);
     assert.ok(fs.existsSync(path.join(DIR, `${base}.md`)), `${base}.md exists`);
-    for (const name of Object.keys(mod.commands)) {
-      assert.ok(COMMANDS.includes(name), `${name} is a contract command`);
-    }
+    assert.deepEqual(Object.keys(mod.commands).sort(), [...COMMANDS].sort(), 'implements exactly the contract commands');
   });
 
   test(`${base}: maps every contract action`, () => {

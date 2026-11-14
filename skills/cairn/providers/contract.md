@@ -12,6 +12,9 @@ A provider is two files in this folder:
 - `<provider>.js`: the adapter. It is zero-dependency Node and is run as
   `node <provider>.js <command> [args]`.
 
+Add the adapter to the `allowed-tools` list in `SKILL.md`, so users are not
+prompted each time Cairn runs it.
+
 `tests/contract.test.js` runs every adapter in this folder against this
 contract. A new provider is done when it passes.
 
