@@ -146,3 +146,25 @@ test('save-item: a bad draft or bad arguments change nothing', () => {
   }
   assert.equal(gh.state().calls.length, 0, 'no gh calls at all');
 });
+
+test('list-items: lists open items of one kind, oldest first', () => {
+  const issue = (number, title, labels, state = 'OPEN') => ({ number, title, body: '', labels, state, url: `https://github.com/octo/repo/issues/${number}` });
+  const gh = fakeGitHub({
+    labels: [{ name: 'epic' }, { name: 'feature' }],
+    issues: [issue(5, 'B', ['epic']), issue(2, 'A', ['epic']), issue(3, 'F', ['feature']), issue(4, 'Old', ['epic'], 'CLOSED')],
+  });
+  const { status, json } = gh.run('list-items', '--kind', 'epic');
+  assert.equal(status, 0);
+  assert.deepEqual(json.items.map((i) => [i.id, i.title]), [['2', 'A'], ['5', 'B']]);
+  assert.equal(gh.run('list-items', '--kind', 'saga').status, 2);
+});
+
+test('save-item: reads the draft from stdin with --file -', () => {
+  const gh = fakeGitHub();
+  const { spawnSync } = require('node:child_process');
+  const path = require('node:path');
+  const script = path.join(__dirname, '..', 'skills', 'cairn', 'providers', 'github.js');
+  const r = spawnSync(process.execPath, [script, 'save-item', '--kind', 'epic', '--file', '-'], { cwd: gh.cwd, env: gh.env, input: EPIC, encoding: 'utf8' });
+  assert.equal(r.status, 0, r.stdout);
+  assert.equal(gh.state().issues[0].title, 'Players can trade between settlements');
+});

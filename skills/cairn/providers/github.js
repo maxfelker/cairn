@@ -204,6 +204,23 @@ function findItem({ exec, repo, kind, title }) {
   return { ok: true, issue: matches[0] || null };
 }
 
+// Open items of one kind, oldest first.
+function listItems({ exec = run, cwd, kind } = {}) {
+  const t = target({ exec, cwd });
+  if (!t.ok) return t;
+  const r = exec('gh', ['issue', 'list', '--repo', t.target, '--label', kind, '--state', 'open', '--limit', '1000', '--json', 'number,title,url']);
+  if (r.missing) return fail('CLI_MISSING', 'The GitHub CLI (gh) is not installed.', 'Install it from https://cli.github.com, then run gh auth login.');
+  if (!r.ok) {
+    if (/gh auth login/.test(r.stderr)) return fail('NOT_LOGGED_IN', `gh is not logged in to ${HOST}.`, LOGIN_FIX);
+    if (/not found/.test(r.stderr)) return { ok: true, provider: PROVIDER, kind, items: [] };
+    return providerError(`listing ${kind} issues`, r);
+  }
+  const items = JSON.parse(r.stdout)
+    .sort((a, b) => a.number - b.number)
+    .map((i) => ({ id: String(i.number), url: i.url, title: i.title }));
+  return { ok: true, provider: PROVIDER, kind, items };
+}
+
 // Create a work item, or update the open one of the same kind and title.
 function saveItem({ exec = run, cwd, kind, file } = {}) {
   const draft = readDraft(file);
@@ -235,6 +252,12 @@ function saveItem({ exec = run, cwd, kind, file } = {}) {
   return { ok: true, provider: PROVIDER, kind, created: !found.issue, item: { id, url, title: draft.title } };
 }
 
+function listItemsArgs(args) {
+  const f = flags(args, ['kind']);
+  if (!f || !KINDS.includes(f.kind)) return null;
+  return listItems({ kind: f.kind });
+}
+
 function saveItemArgs(args) {
   const f = flags(args, ['kind', 'file']);
   if (!f || !f.kind || !f.file || !KINDS.includes(f.kind)) return null;
@@ -252,6 +275,7 @@ const commands = {
   auth: (args) => (args.length ? null : auth()),
   access: accessArgs,
   check: (args) => (args.length ? null : check()),
+  'list-items': listItemsArgs,
   'save-item': saveItemArgs,
 };
 
@@ -259,4 +283,4 @@ if (require.main === module) {
   process.exitCode = cli(commands, process.argv.slice(2));
 }
 
-module.exports = { name: PROVIDER, commands, actions: ACTIONS, kinds: KIND_LABELS, parseRemote, target, auth, access, check, saveItem };
+module.exports = { name: PROVIDER, commands, actions: ACTIONS, kinds: KIND_LABELS, parseRemote, target, auth, access, check, listItems, saveItem };

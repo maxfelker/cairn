@@ -26,6 +26,7 @@ contract. A new provider is done when it passes.
 | `auth` | Is the user logged in with the provider's own tool? | `login` |
 | `access [--for <action>]` | What may the user do on the target? | `permission`, `allowed` (the actions the user may take) |
 | `check` | All of the above, for the setup check | `target`, `auth`, `access` (each a full result) |
+| `list-items --kind <kind>` | Which open items of this kind exist? | `items` (each `id`, `url`, `title`) |
 | `save-item --kind <kind> --file <draft>` | Create a work item, or update the open one of that kind with exactly that title | `created` (true or false), `item` (`id`, `url`, `title`) |
 
 Add a command here only when a feature first needs it. Then add it to every
@@ -45,8 +46,8 @@ creates the kind's label or category if it is missing.
 
 ## Drafts
 
-A draft is one Markdown file. The first line is `# <title>`, and the rest is
-the body. Cairn writes drafts to a temporary location outside the
+A draft is one Markdown file, or `-` for stdin. The first line is
+`# <title>`, and the rest is the body. Cairn writes drafts to a temporary location outside the
 repository, and checks their structure with `structure.js` before saving.
 Adapters only read drafts.
 

@@ -6,7 +6,7 @@
 // A draft is one Markdown file. The first line is `# <title>`, and the rest is
 // the body.
 //
-//   node structure.js <kind> <draft.md>
+//   node structure.js <kind> <draft.md>   (use - to read the draft from stdin)
 //   exit 0  {"ok": true, "kind": "...", "title": "..."}
 //   exit 1  {"ok": false, "kind": "...", "problems": ["..."]}
 //   exit 2  wrong usage
@@ -121,7 +121,7 @@ function main(argv) {
   }
   let text;
   try {
-    text = fs.readFileSync(file, 'utf8');
+    text = fs.readFileSync(file === '-' ? 0 : file, 'utf8');
   } catch (err) {
     process.stderr.write(`cannot read ${file}: ${err.message}\n`);
     return 2;

@@ -24,7 +24,7 @@ const CODES = [
 
 const ACTIONS = ['comment', 'create-item', 'label', 'link-child', 'push', 'propose-change'];
 
-const COMMANDS = ['target', 'auth', 'access', 'check', 'save-item'];
+const COMMANDS = ['target', 'auth', 'access', 'check', 'list-items', 'save-item'];
 
 const KINDS = ['epic', 'feature', 'task'];
 
@@ -75,11 +75,11 @@ function gitRemote({ exec = run, cwd } = {}) {
 }
 
 // Read a draft: one Markdown file whose first line is `# <title>`. The rest
-// is the body. Drafts are passed by path and are never written by adapters.
+// is the body. `-` reads the draft from stdin. Adapters never write drafts.
 function readDraft(file) {
   let text;
   try {
-    text = fs.readFileSync(file, 'utf8');
+    text = fs.readFileSync(file === '-' ? 0 : file, 'utf8');
   } catch (err) {
     return fail('INVALID_DRAFT', `Cannot read the draft ${file}: ${err.code || err.message}.`, 'Write the draft to a file and pass its path.');
   }
