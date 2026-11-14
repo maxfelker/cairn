@@ -1,0 +1,190 @@
+#!/usr/bin/env node
+// A mock GitHub CLI for integration tests. Put this folder first on PATH and
+// set FAKE_GH_STATE to a JSON file. The adapter then runs as usual, but
+// against this file instead of GitHub.
+//
+// The state file holds:
+//   { repo, login, permission, issuesEnabled, labels: [{name, color, description}],
+//     issues: [{number, title, body, labels, state, url}], calls: [[...argv]] }
+//
+// Only the commands the adapter uses are modeled, with gh's real output and
+// error text. Anything else exits 64, so the adapter can't quietly depend on
+// behavior this mock doesn't model.
+
+'use strict';
+
+const fs = require('node:fs');
+
+const STATE = process.env.FAKE_GH_STATE;
+if (!STATE) {
+  process.stderr.write('fake gh: FAKE_GH_STATE is not set\n');
+  process.exit(64);
+}
+
+const state = JSON.parse(fs.readFileSync(STATE, 'utf8'));
+state.labels = state.labels || [];
+state.issues = state.issues || [];
+state.calls = state.calls || [];
+const argv = process.argv.slice(2);
+state.calls.push(argv);
+
+const VALUE_FLAGS = {
+  '-R': 'repo', '--repo': 'repo', '--json': 'json', '-l': 'label', '--label': 'label',
+  '--state': 'state', '-s': 'state', '--search': 'search', '-S': 'search', '-L': 'limit', '--limit': 'limit',
+  '-t': 'title', '--title': 'title', '-F': 'bodyFile', '--body-file': 'bodyFile', '-b': 'body', '--body': 'body',
+  '-c': 'color', '--color': 'color', '-d': 'description', '--description': 'description', '-h': 'hostname', '--hostname': 'hostname',
+};
+const BOOL_FLAGS = { '--force': 'force', '-f': 'force' };
+
+function parse(args) {
+  const out = { _: [], label: [] };
+  for (let i = 0; i < args.length; i += 1) {
+    const a = args[i];
+    if (VALUE_FLAGS[a]) {
+      const key = VALUE_FLAGS[a];
+      const v = args[++i];
+      if (key === 'label') out.label.push(...v.split(','));
+      else out[key] = v;
+    } else if (BOOL_FLAGS[a]) {
+      out[BOOL_FLAGS[a]] = true;
+    } else if (a.startsWith('-')) {
+      unsupported(`flag ${a}`);
+    } else {
+      out._.push(a);
+    }
+  }
+  return out;
+}
+
+function save() {
+  fs.writeFileSync(STATE, JSON.stringify(state, null, 2));
+}
+
+function done(stdout, code = 0, stderr = '') {
+  save();
+  if (stdout) process.stdout.write(stdout);
+  if (stderr) process.stderr.write(stderr);
+  process.exit(code);
+}
+
+function unsupported(what) {
+  done('', 64, `fake gh: unsupported ${what}: gh ${argv.join(' ')}\n`);
+}
+
+function pick(obj, fields) {
+  return Object.fromEntries(fields.split(',').map((f) => [f, obj[f]]));
+}
+
+const RANKS = ['READ', 'TRIAGE', 'WRITE', 'MAINTAIN', 'ADMIN'];
+const atLeast = (level) => RANKS.indexOf(state.permission) >= RANKS.indexOf(level);
+
+function requireLogin() {
+  if (!state.login) {
+    done('', 4, 'To get started with GitHub CLI, please run:  gh auth login\nAlternatively, populate the GH_TOKEN environment variable with a GitHub API authentication token.\n');
+  }
+}
+
+function requireRepo(repo) {
+  if (repo !== state.repo) {
+    done('', 1, `GraphQL: Could not resolve to a Repository with the name '${repo}'. (repository)\n`);
+  }
+}
+
+function issueView(issue) {
+  return {
+    number: issue.number,
+    title: issue.title,
+    body: issue.body,
+    url: issue.url,
+    state: issue.state,
+    labels: issue.labels.map((name) => ({ name })),
+  };
+}
+
+function readBody(opts) {
+  if (opts.bodyFile) return fs.readFileSync(opts.bodyFile, 'utf8');
+  return opts.body || '';
+}
+
+const [group, cmd, ...rest] = argv;
+const opts = parse(rest);
+
+if (group === 'auth' && cmd === 'status') {
+  const hosts = state.login
+    ? { 'github.com': [{ state: 'success', active: true, host: 'github.com', login: state.login, tokenSource: 'fake', scopes: 'repo' }] }
+    : {};
+  done(`${JSON.stringify({ hosts })}\n`);
+}
+
+if (group === 'repo' && cmd === 'view') {
+  requireLogin();
+  requireRepo(opts._[0]);
+  const view = {
+    nameWithOwner: state.repo,
+    viewerPermission: state.permission,
+    hasIssuesEnabled: state.issuesEnabled !== false,
+  };
+  done(`${JSON.stringify(pick(view, opts.json))}\n`);
+}
+
+if (group === 'label' && cmd === 'create') {
+  requireLogin();
+  requireRepo(opts.repo);
+  if (!atLeast('TRIAGE')) done('', 1, 'HTTP 403: Must have triage access to create labels\n');
+  const name = opts._[0];
+  const existing = state.labels.find((l) => l.name.toLowerCase() === name.toLowerCase());
+  if (existing && !opts.force) {
+    done('', 1, `label with name "${name}" already exists; use \`--force\` to update its color and description\n`);
+  }
+  const label = { name, color: opts.color || 'ededed', description: opts.description || '' };
+  if (existing) Object.assign(existing, label);
+  else state.labels.push(label);
+  done(`✓ Label "${name}" created in ${state.repo}\n`);
+}
+
+if (group === 'issue' && cmd === 'list') {
+  requireLogin();
+  requireRepo(opts.repo);
+  const phrase = (/"([^"]+)"/.exec(opts.search || '') || [])[1];
+  const wantState = (opts.state || 'open').toUpperCase();
+  const found = state.issues
+    .filter((i) => wantState === 'ALL' || i.state === wantState)
+    .filter((i) => opts.label.every((l) => i.labels.includes(l)))
+    .filter((i) => !phrase || i.title.toLowerCase().includes(phrase.toLowerCase()))
+    .slice(0, Number(opts.limit || 30))
+    .map((i) => pick(issueView(i), opts.json));
+  done(`${JSON.stringify(found)}\n`);
+}
+
+if (group === 'issue' && cmd === 'create') {
+  requireLogin();
+  requireRepo(opts.repo);
+  if (state.issuesEnabled === false) done('', 1, `the '${state.repo}' repository has disabled issues\n`);
+  for (const l of opts.label) {
+    if (!state.labels.some((x) => x.name === l)) done('', 1, `could not add label: '${l}' not found\n`);
+  }
+  if (opts.label.length && !atLeast('TRIAGE')) done('', 1, 'HTTP 403: Must have triage access to add labels\n');
+  const number = state.issues.reduce((n, i) => Math.max(n, i.number), 0) + 1;
+  const issue = {
+    number,
+    title: opts.title,
+    body: readBody(opts),
+    labels: opts.label,
+    state: 'OPEN',
+    url: `https://github.com/${state.repo}/issues/${number}`,
+  };
+  state.issues.push(issue);
+  done(`${issue.url}\n`);
+}
+
+if (group === 'issue' && cmd === 'edit') {
+  requireLogin();
+  requireRepo(opts.repo);
+  const issue = state.issues.find((i) => i.number === Number(opts._[0]));
+  if (!issue) done('', 1, `GraphQL: Could not resolve to an issue or pull request with the number of ${opts._[0]}. (repository.issue)\n`);
+  if (opts.title) issue.title = opts.title;
+  if (opts.bodyFile || opts.body !== undefined) issue.body = readBody(opts);
+  done(`${issue.url}\n`);
+}
+
+unsupported('command');
