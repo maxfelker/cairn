@@ -141,3 +141,72 @@ test('auth reports a missing or outdated gh', () => {
   assert.equal(old.code, 'CLI_MISSING');
   assert.match(old.fix, /Update gh/);
 });
+
+function repoView(viewerPermission, hasIssuesEnabled = true) {
+  return fakeGh({
+    'repo view': { stdout: JSON.stringify({ nameWithOwner: 'octo/repo', viewerPermission, hasIssuesEnabled }) },
+  });
+}
+
+// Every row of the action table, at the boundary role and one role below.
+const MINIMUM = {
+  comment: 'READ', 'create-item': 'READ', label: 'TRIAGE', 'link-child': 'TRIAGE', push: 'WRITE', 'propose-change': 'WRITE',
+};
+const LEVELS = ['NONE', 'READ', 'TRIAGE', 'WRITE', 'MAINTAIN', 'ADMIN'];
+
+for (const [action, level] of Object.entries(MINIMUM)) {
+  test(`access --for ${action} needs ${level}`, () => {
+    const enough = github.access({ exec: repoView(level), repo: 'octo/repo', action });
+    assert.equal(enough.ok, true, `${level} is enough for ${action}`);
+    assert.ok(enough.allowed.includes(action));
+
+    const below = LEVELS[LEVELS.indexOf(level) - 1];
+    const short = github.access({ exec: repoView(below === 'NONE' ? null : below), repo: 'octo/repo', action });
+    assert.equal(short.code, 'MISSING_PERMISSION');
+    assert.match(short.message, new RegExp(`You have ${below} access to octo/repo; .+ needs ${level}\\.`));
+    assert.match(short.fix, new RegExp(`${level} access`));
+  });
+}
+
+test('access without --for lists what the role allows', () => {
+  const read = github.access({ exec: repoView('READ'), repo: 'octo/repo' });
+  assert.deepEqual(read, {
+    ok: true, provider: 'github', target: 'octo/repo', permission: 'READ', issues: true, allowed: ['comment', 'create-item'],
+  });
+  const admin = github.access({ exec: repoView('ADMIN'), repo: 'octo/repo' });
+  assert.deepEqual(admin.allowed, Object.keys(MINIMUM));
+});
+
+test('access reports issue actions as disabled when issues are off', () => {
+  const exec = repoView('ADMIN', false);
+  for (const action of ['create-item', 'label', 'link-child']) {
+    const result = github.access({ exec, repo: 'octo/repo', action });
+    assert.equal(result.code, 'FEATURE_DISABLED', action);
+  }
+  assert.equal(github.access({ exec, repo: 'octo/repo', action: 'push' }).ok, true);
+});
+
+test('access reports unreachable repos, logged-out gh, and unknown actions', () => {
+  const unreachable = github.access({
+    repo: 'octo/nope',
+    exec: () => ({ ok: false, stdout: '', stderr: "GraphQL: Could not resolve to a Repository with the name 'octo/nope'.", missing: false }),
+  });
+  assert.equal(unreachable.code, 'TARGET_UNAVAILABLE');
+
+  const loggedOut = github.access({
+    repo: 'octo/repo',
+    exec: () => ({ ok: false, stdout: '', stderr: 'To get started with GitHub CLI, please run:  gh auth login', missing: false }),
+  });
+  assert.equal(loggedOut.code, 'NOT_LOGGED_IN');
+
+  const unknown = github.access({ exec: repoView('ADMIN'), repo: 'octo/repo', action: 'deploy' });
+  assert.equal(unknown.code, 'UNKNOWN_ACTION');
+  assert.match(unknown.fix, /push/);
+});
+
+test('CLI access rejects malformed arguments', () => {
+  for (const args of [['--for'], ['push'], ['--for', 'push', 'extra']]) {
+    const r = spawnSync(process.execPath, [SCRIPT, 'access', ...args], { encoding: 'utf8' });
+    assert.equal(r.status, 2, args.join(' '));
+  }
+});

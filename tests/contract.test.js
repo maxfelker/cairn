@@ -53,6 +53,10 @@ for (const { file, mod } of providers) {
     }
   });
 
+  test(`${base}: maps every contract action`, () => {
+    assert.deepEqual(Object.keys(mod.actions || {}).sort(), [...ACTIONS].sort());
+  });
+
   test(`${base}: wrong usage exits 2 with no JSON`, () => {
     const r = spawnSync(process.execPath, [file, 'not-a-command'], { encoding: 'utf8' });
     assert.equal(r.status, 2);
