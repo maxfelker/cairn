@@ -1,0 +1,20 @@
+{
+  "name": "cairn",
+  "version": "0.1.0",
+  "description": "A high-quality inner loop for the SDLC. Cairn keeps your agents' plans, decisions, progress, and releases in your team's SDLC tool, so every person and agent works from the same shared record.",
+  "author": {
+    "name": "Max Felker",
+    "url": "https://github.com/maxfelker"
+  },
+  "homepage": "https://github.com/maxfelker/cairn",
+  "repository": "https://github.com/maxfelker/cairn",
+  "license": "GPL-3.0-only",
+  "keywords": [
+    "sdlc",
+    "agentic-workflow",
+    "planning",
+    "issues",
+    "pull-requests",
+    "releases"
+  ]
+}
