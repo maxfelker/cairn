@@ -9,6 +9,14 @@ description: >
   release, and when they ask whether Cairn is set up or ready ("is Cairn set
   up?", "check Cairn").
 license: GPL-3.0-only
+# Pre-approve only the read-only setup checks and Cairn's own adapters, so the
+# user is not prompted for each one. Add a line for each new provider.
+allowed-tools:
+  - Bash(git --version)
+  - Bash(node --version)
+  - Bash(git rev-parse --is-inside-work-tree)
+  - Bash(git remote)
+  - Bash(node "${CLAUDE_SKILL_DIR}/providers/github.js":*)
 ---
 
 # Cairn
@@ -36,17 +44,36 @@ next step and does it.
   required checks, and approvals. Ask before you merge, publish a release, or
   take any action that is hard to undo.
 
-## Provider reference
+## Providers
 
-Find the provider from the repository's remote URL, then read its reference
-file in this skill's folder before you run any provider command:
+Cairn's workflow is the same for every SDLC tool. Each provider is an
+adapter in `providers/` that implements one contract
+([providers/contract.md](providers/contract.md)) with that tool's own CLI or
+API. Find the provider from the repository's remote URL, then read its
+reference file:
 
-| Remote host  | Reference                  |
-|--------------|----------------------------|
-| `github.com` | [github.md](github.md)     |
+| Remote host  | Reference                                  |
+|--------------|--------------------------------------------|
+| `github.com` | [providers/github.md](providers/github.md) |
 
-If the host is not listed, tell the user that Cairn supports only the
-providers above for now.
+If the host is not listed, tell the user which providers Cairn supports.
+
+Run an adapter command like this:
+
+```
+node "${CLAUDE_SKILL_DIR}/providers/<provider>.js" <command> [args]
+```
+
+Always use that full, quoted path, even inside the Cairn repository, so the
+pre-approved permission matches. Each command prints one JSON object. If `ok` is false, show the user its
+`message` and `fix`. Use adapter commands for everything they cover. Do not
+improvise the provider's own commands for the same thing.
+
+**Check access before every change.** Before Cairn creates, labels, links,
+comments, pushes, or opens a change for review, run
+`access --for <action>` with the matching contract action. If it fails, stop
+before the change and tell the user the message and the fix. Never work
+around a failed check.
 
 ## Setup check
 
@@ -56,33 +83,46 @@ result. Do not stop at the first gap.
 
 1. **git installed:** `git --version` succeeds.
    Fix: install Git from https://git-scm.com/downloads.
-2. **Inside a git clone:** `git rev-parse --is-inside-work-tree` prints `true`.
+2. **Node.js installed:** `node --version` succeeds. The provider adapters
+   run on Node.
+   Fix: install Node.js 18 or later from https://nodejs.org.
+3. **Inside a git clone:** `git rev-parse --is-inside-work-tree` prints `true`.
    Fix: `cd` into a clone of the repository, or clone it first.
-3. **Has a remote:** `git remote` lists at least one remote (prefer `origin`).
+4. **Has a remote:** `git remote` lists at least one remote (prefer `origin`).
    Fix: add the repository's URL with `git remote add origin <url>`.
-4. **Provider supported:** the remote host appears in the provider table.
+5. **Provider supported:** the remote host appears in the provider table.
    Fix: none for now. Say which providers are supported.
-5. **Provider CLI installed:** run the CLI check from the provider reference.
-   Fix: use the install line from the provider reference.
+6. **Provider ready:** run the adapter's `check` command. Report each of
+   its parts:
+   - `auth`: the provider CLI is installed and logged in, and as whom;
+   - `target`: which project the work goes to;
+   - `access`: the user's permission, and any contract actions it does not
+     allow.
 
-If check 3 or 4 fails, you cannot pick a provider. Run check 5 for every
-provider in the table, so the user still learns what is missing.
+If check 4 or 5 fails, you cannot pick a provider. Run `auth` for every
+provider in the table instead, so the user still learns whether its CLI is
+installed and logged in. If Node.js is missing, skip check 6 and say it
+needs Node.js.
 
 Report as a short checklist: one line per check, marked ready (✓) or missing
-(✗). Give a one-line fix under each ✗. End with a single sentence on whether
-Cairn is ready. When everything passes, suggest a next step such as
-"plan this idea: …" or "work on #42".
+(✗). Give a one-line fix under each ✗. If the permission does not allow every
+action, mark access with ⚠ and say in plain words what the user cannot do.
+End with a single sentence on whether Cairn is ready. When everything passes,
+suggest a next step such as "plan this idea: …" or "work on #42".
 
 Example:
 
 ```
 ✓ git 2.43.0
+✓ Node.js 22.11.0
 ✓ Inside a git clone
-✗ No git remote
-  Fix: git remote add origin git@github.com:OWNER/REPO.git
-✓ GitHub CLI (gh 2.62.0)
+✓ Remote: origin (octo/repo)
+✓ Provider CLI logged in as octo
+⚠ READ access to octo/repo: you can comment and create items, but not
+  label, link, push, or open changes for review
+  Fix: ask a repository admin for WRITE access.
 
-Cairn is not ready yet: add a remote, then ask again.
+Cairn can plan and comment here, but cannot implement changes yet.
 ```
 
 ## Workflows
