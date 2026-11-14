@@ -18,6 +18,7 @@ const DEFAULT_STATE = {
   issuesEnabled: true,
   labels: [],
   issues: [],
+  calls: [],
 };
 
 // A temporary clone of octo/repo, plus a mock GitHub seeded with `state`.
