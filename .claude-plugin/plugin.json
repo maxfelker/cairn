@@ -1,0 +1,13 @@
+{
+  "name": "cairn",
+  "version": "0.1.0",
+  "description": "Delegate GitHub-tracked software delivery to Claude. Plans, progress, feedback, and releases live in GitHub issues, pull requests, and releases instead of local files.",
+  "author": {
+    "name": "Max Felker",
+    "url": "https://github.com/maxfelker"
+  },
+  "homepage": "https://github.com/maxfelker/cairn",
+  "repository": "https://github.com/maxfelker/cairn",
+  "license": "GPL-3.0-only",
+  "keywords": ["github", "sdlc", "issues", "pull-requests", "releases", "workflow"]
+}

@@ -1,0 +1,17 @@
+{
+  "$schema": "https://anthropic.com/claude-code/marketplace.schema.json",
+  "name": "cairn",
+  "description": "Cairn keeps agentic planning and delivery context in your SDLC tools, where everyone can see it.",
+  "owner": {
+    "name": "Max Felker",
+    "url": "https://github.com/maxfelker"
+  },
+  "plugins": [
+    {
+      "name": "cairn",
+      "description": "Turn ideas into epics, features, and tasks, implement them in focused pull requests, and ship releases, all recorded in GitHub.",
+      "source": "./",
+      "category": "productivity"
+    }
+  ]
+}
