@@ -38,12 +38,15 @@ next step and does it.
 
 ## Provider reference
 
-Find the provider from the repository's remote URL, then read its reference
-file in this skill's folder before you run any provider command:
+Cairn's workflow is the same for every SDLC tool. Each provider is an
+adapter in `providers/` that implements the same contract
+([providers/contract.md](providers/contract.md)) with that tool's own CLI or
+API. Find the provider from the repository's remote URL, then read its
+reference file before you run any provider command:
 
-| Remote host  | Reference                  |
-|--------------|----------------------------|
-| `github.com` | [github.md](github.md)     |
+| Remote host  | Reference                                  |
+|--------------|--------------------------------------------|
+| `github.com` | [providers/github.md](providers/github.md) |
 
 If the host is not listed, tell the user that Cairn supports only the
 providers above for now.

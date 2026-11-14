@@ -27,3 +27,8 @@ jobs:
       # secrets. It checks both manifests and every skill under skills/.
       - name: Validate plugin
         run: claude plugin validate . --strict
+
+      # Provider adapters and the provider contract. Offline: tests use
+      # temporary git repos and fake CLIs, never the network or a login.
+      - name: Run tests
+        run: node --test 'tests/*.test.js'
