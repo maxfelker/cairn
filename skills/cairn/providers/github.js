@@ -170,9 +170,10 @@ function check({ exec = run, cwd } = {}) {
   return { ...head, target: t, auth: a, access: acc };
 }
 
-// Each kind is an issue label. Colors apply only when Cairn creates the label.
-// An existing label is never changed.
+// Fallback labels for repositories without a matching issue type. Colors apply
+// only when Cairn creates the label. An existing label is never changed.
 const KIND_LABELS = {
+  bug: { color: 'D73A4A', description: 'Something is not working' },
   epic: { color: '3E4B9E', description: 'Why the work exists and what success looks like' },
   feature: { color: '0E8A16', description: 'A capability a persona gains' },
   task: { color: 'C5DEF5', description: 'An engineering step that delivers a feature' },
@@ -181,6 +182,45 @@ const KIND_LABELS = {
 function providerError(what, r) {
   const detail = (r.stderr || r.stdout || '').trim().split('\n')[0] || 'no details';
   return fail('PROVIDER_ERROR', `GitHub rejected ${what}: ${detail}`, 'Check the message above, then try again.');
+}
+
+// Run `gh api` and parse its JSON. `body` is sent as the JSON request body.
+function api({ exec, cwd }, args, body) {
+  const full = ['api', ...args];
+  if (body !== undefined) full.push('--input', '-');
+  const r = exec('gh', full, { cwd, input: body === undefined ? undefined : JSON.stringify(body) });
+  if (r.missing) return { ok: false, result: fail('CLI_MISSING', 'The GitHub CLI (gh) is not installed.', 'Install it from https://cli.github.com, then run gh auth login.') };
+  if (!r.ok) {
+    if (/gh auth login/.test(r.stderr)) return { ok: false, result: fail('NOT_LOGGED_IN', `gh is not logged in to ${HOST}.`, LOGIN_FIX) };
+    return { ok: false, r };
+  }
+  return { ok: true, data: r.stdout.trim() ? JSON.parse(r.stdout) : null };
+}
+
+// GET every page of a list endpoint.
+function apiList(ctx, path) {
+  const res = api(ctx, ['--paginate', '--slurp', path]);
+  if (res.ok) res.data = res.data.flat();
+  return res;
+}
+
+// The repository's enabled issue type names. Empty when the repository has
+// none, or when the GitHub host doesn't support issue types.
+function issueTypes(ctx, repo) {
+  const [owner, name] = repo.split('/');
+  const query = 'query($owner: String!, $name: String!) { repository(owner: $owner, name: $name) { issueTypes(first: 50) { nodes { name isEnabled } } } }';
+  const res = api(ctx, ['graphql', '-f', `query=${query}`, '-f', `owner=${owner}`, '-f', `name=${name}`]);
+  const nodes = res.ok && res.data && res.data.data && res.data.data.repository && res.data.data.repository.issueTypes
+    ? res.data.data.repository.issueTypes.nodes
+    : [];
+  return nodes.filter((n) => n.isEnabled).map((n) => n.name);
+}
+
+// How a kind is recorded on GitHub: the native issue type with the same name
+// if the repository has one, otherwise a label. Labels are the fallback.
+function kindSpec(kind, types) {
+  const type = types.find((t) => t.toLowerCase() === kind);
+  return type ? { via: 'type', type, label: kind } : { via: 'label', label: kind };
 }
 
 // Create the label, or confirm it exists. Uses no --force, which would
@@ -192,33 +232,41 @@ function ensureLabel({ exec, repo, kind }) {
   return providerError(`creating the "${kind}" label`, r);
 }
 
-// The open item of this kind with exactly this title, if there is one. Uses
-// the label listing, not search, because GitHub's search index lags behind
-// new issues, and a just-created epic could be missed.
-function findItem({ exec, repo, kind, title }) {
-  const r = exec('gh', ['issue', 'list', '--repo', repo, '--label', kind, '--state', 'open', '--limit', '1000', '--json', 'number,title,url']);
-  if (!r.ok) return providerError(`listing ${kind} issues`, r);
-  const matches = JSON.parse(r.stdout)
-    .filter((i) => i.title.trim() === title.trim())
-    .sort((a, b) => a.number - b.number);
-  return { ok: true, issue: matches[0] || null };
+function toItem(issue) {
+  return { id: String(issue.number), url: issue.html_url, title: issue.title };
+}
+
+// Open issues of one kind, oldest first. In a repository with types this
+// matches the type OR the legacy label, so older label-only issues are found.
+// Uses the issue listing, not search, because GitHub's search index lags
+// behind new issues.
+function openOfKind(ctx, repo, spec) {
+  const queries = [`labels=${encodeURIComponent(spec.label)}`];
+  if (spec.via === 'type') queries.unshift(`type=${encodeURIComponent(spec.type)}`);
+  const byNumber = new Map();
+  for (const q of queries) {
+    const res = apiList(ctx, `repos/${repo}/issues?state=open&per_page=100&${q}`);
+    if (!res.ok) return res;
+    for (const issue of res.data) {
+      if (!issue.pull_request) byNumber.set(issue.number, issue);
+    }
+  }
+  return { ok: true, data: [...byNumber.values()].sort((a, b) => a.number - b.number) };
+}
+
+function failed(res, what) {
+  return res.result || providerError(what, res.r);
 }
 
 // Open items of one kind, oldest first.
 function listItems({ exec = run, cwd, kind } = {}) {
   const t = target({ exec, cwd });
   if (!t.ok) return t;
-  const r = exec('gh', ['issue', 'list', '--repo', t.target, '--label', kind, '--state', 'open', '--limit', '1000', '--json', 'number,title,url']);
-  if (r.missing) return fail('CLI_MISSING', 'The GitHub CLI (gh) is not installed.', 'Install it from https://cli.github.com, then run gh auth login.');
-  if (!r.ok) {
-    if (/gh auth login/.test(r.stderr)) return fail('NOT_LOGGED_IN', `gh is not logged in to ${HOST}.`, LOGIN_FIX);
-    if (/not found/.test(r.stderr)) return { ok: true, provider: PROVIDER, kind, items: [] };
-    return providerError(`listing ${kind} issues`, r);
-  }
-  const items = JSON.parse(r.stdout)
-    .sort((a, b) => a.number - b.number)
-    .map((i) => ({ id: String(i.number), url: i.url, title: i.title }));
-  return { ok: true, provider: PROVIDER, kind, items };
+  const ctx = { exec, cwd };
+  const spec = kindSpec(kind, issueTypes(ctx, t.target));
+  const res = openOfKind(ctx, t.target, spec);
+  if (!res.ok) return failed(res, `listing ${kind} issues`);
+  return { ok: true, provider: PROVIDER, kind, via: spec.via, items: res.data.map(toItem) };
 }
 
 // Create a work item, or update the open one of the same kind and title.
@@ -229,27 +277,33 @@ function saveItem({ exec = run, cwd, kind, file } = {}) {
   const t = target({ exec, cwd });
   if (!t.ok) return t;
   const repo = t.target;
+  const ctx = { exec, cwd };
 
   for (const action of ['create-item', 'label']) {
     const a = access({ exec, cwd, repo, action });
     if (!a.ok) return a;
   }
 
-  const label = ensureLabel({ exec, repo, kind });
-  if (!label.ok) return label;
+  const spec = kindSpec(kind, issueTypes(ctx, repo));
+  if (spec.via === 'label') {
+    const label = ensureLabel({ exec, repo, kind });
+    if (!label.ok) return label;
+  }
 
-  const found = findItem({ exec, repo, kind, title: draft.title });
-  if (!found.ok) return found;
+  const open = openOfKind(ctx, repo, spec);
+  if (!open.ok) return failed(open, `listing ${kind} issues`);
+  const existing = open.data.find((i) => i.title.trim() === draft.title.trim());
 
-  const opts = { cwd, input: draft.body };
-  const r = found.issue
-    ? exec('gh', ['issue', 'edit', String(found.issue.number), '--repo', repo, '--body-file', '-'], opts)
-    : exec('gh', ['issue', 'create', '--repo', repo, '--title', draft.title, '--label', kind, '--body-file', '-'], opts);
-  if (!r.ok) return providerError(found.issue ? `updating #${found.issue.number}` : `creating the ${kind}`, r);
+  const res = existing
+    ? api(ctx, ['-X', 'PATCH', `repos/${repo}/issues/${existing.number}`], { body: draft.body })
+    : api(ctx, ['-X', 'POST', `repos/${repo}/issues`], {
+      title: draft.title,
+      body: draft.body,
+      ...(spec.via === 'type' ? { type: spec.type } : { labels: [spec.label] }),
+    });
+  if (!res.ok) return failed(res, existing ? `updating #${existing.number}` : `creating the ${kind}`);
 
-  const url = r.stdout.trim().split('\n').pop();
-  const id = found.issue ? String(found.issue.number) : (/\/issues\/(\d+)$/.exec(url) || [])[1];
-  return { ok: true, provider: PROVIDER, kind, created: !found.issue, item: { id, url, title: draft.title } };
+  return { ok: true, provider: PROVIDER, kind, via: spec.via, created: !existing, item: toItem(res.data) };
 }
 
 function listItemsArgs(args) {

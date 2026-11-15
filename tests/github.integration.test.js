@@ -58,6 +58,7 @@ test('save-item: the first save creates the label and the item', () => {
     ok: true,
     provider: 'github',
     kind: 'epic',
+    via: 'label',
     created: true,
     item: { id: '1', url: 'https://github.com/octo/repo/issues/1', title: 'Players can trade between settlements' },
   });
@@ -167,4 +168,82 @@ test('save-item: reads the draft from stdin with --file -', () => {
   const r = spawnSync(process.execPath, [script, 'save-item', '--kind', 'epic', '--file', '-'], { cwd: gh.cwd, env: gh.env, input: EPIC, encoding: 'utf8' });
   assert.equal(r.status, 0, r.stdout);
   assert.equal(gh.state().issues[0].title, 'Players can trade between settlements');
+});
+
+// Issue types: GitHub's native kinds. Labels are the fallback.
+
+const TYPED = { issueTypes: ['Task', 'Bug', 'Feature'] };
+const FEATURE = '# A player can move the camera with WASD\n\nThe camera pans when a player holds W, A, S, or D.\n';
+
+test('types: a feature in a typed repo gets the Feature type and no label', () => {
+  const gh = fakeGitHub(TYPED);
+  const { json } = gh.run('save-item', '--kind', 'feature', '--file', gh.draft('f.md', FEATURE));
+  assert.equal(json.via, 'type');
+  const [issue] = gh.state().issues;
+  assert.equal(issue.type, 'Feature');
+  assert.deepEqual(issue.labels, []);
+  assert.equal(gh.state().labels.length, 0, 'no label created');
+});
+
+test('types: bug and task use their types too', () => {
+  const gh = fakeGitHub(TYPED);
+  gh.run('save-item', '--kind', 'bug', '--file', gh.draft('b.md', '# Camera jitters at the map edge\n\nSteps…\n'));
+  gh.run('save-item', '--kind', 'task', '--file', gh.draft('t.md', '# Add the camera input handler\n\nDo it.\n'));
+  assert.deepEqual(gh.state().issues.map((i) => i.type), ['Bug', 'Task']);
+});
+
+test('types: an epic falls back to a label when there is no Epic type', () => {
+  const gh = fakeGitHub(TYPED);
+  const { json } = gh.run('save-item', '--kind', 'epic', '--file', gh.draft('e.md', EPIC));
+  assert.equal(json.via, 'label');
+  assert.deepEqual(gh.state().issues[0].labels, ['epic']);
+  assert.equal(gh.state().issues[0].type, null);
+});
+
+test('types: an org Epic type is used when it exists', () => {
+  const gh = fakeGitHub({ issueTypes: ['Epic', 'Feature'] });
+  assert.equal(gh.run('save-item', '--kind', 'epic', '--file', gh.draft('e.md', EPIC)).json.via, 'type');
+  assert.equal(gh.state().issues[0].type, 'Epic');
+});
+
+test('types: an untyped repo uses labels for every kind', () => {
+  const gh = fakeGitHub({ issueTypes: [] });
+  const { json } = gh.run('save-item', '--kind', 'feature', '--file', gh.draft('f.md', FEATURE));
+  assert.equal(json.via, 'label');
+  assert.deepEqual(gh.state().issues[0].labels, ['feature']);
+});
+
+test('types: a host without issue types falls back to labels', () => {
+  const gh = fakeGitHub({ issueTypes: null });
+  const { status, json } = gh.run('save-item', '--kind', 'feature', '--file', gh.draft('f.md', FEATURE));
+  assert.equal(status, 0, JSON.stringify(json));
+  assert.equal(json.via, 'label');
+});
+
+test('types: a legacy label-only feature is found, not duplicated', () => {
+  const gh = fakeGitHub({
+    ...TYPED,
+    labels: [{ name: 'feature' }],
+    issues: [{ number: 2, title: 'A player can move the camera with WASD', labels: ['feature'] }],
+  });
+  const { json } = gh.run('save-item', '--kind', 'feature', '--file', gh.draft('f.md', FEATURE));
+  assert.equal(json.created, false);
+  assert.equal(json.item.id, '2');
+  assert.equal(gh.state().issues.length, 1);
+
+  const listed = gh.run('list-items', '--kind', 'feature').json;
+  assert.deepEqual(listed.items.map((i) => i.id), ['2']);
+});
+
+test('types: list-items merges typed and labeled items without repeats', () => {
+  const gh = fakeGitHub({
+    ...TYPED,
+    issues: [
+      { number: 1, title: 'Typed', type: 'Feature' },
+      { number: 2, title: 'Labeled', labels: ['feature'] },
+      { number: 3, title: 'Both', type: 'Feature', labels: ['feature'] },
+      { number: 4, title: 'A task', type: 'Task' },
+    ],
+  });
+  assert.deepEqual(gh.run('list-items', '--kind', 'feature').json.items.map((i) => i.title), ['Typed', 'Labeled', 'Both']);
 });

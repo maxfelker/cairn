@@ -26,7 +26,7 @@ const ACTIONS = ['comment', 'create-item', 'label', 'link-child', 'push', 'propo
 
 const COMMANDS = ['target', 'auth', 'access', 'check', 'list-items', 'save-item'];
 
-const KINDS = ['epic', 'feature', 'task'];
+const KINDS = ['epic', 'feature', 'task', 'bug'];
 
 // Run a command without a shell and never throw. `missing` means the binary
 // is not on PATH.

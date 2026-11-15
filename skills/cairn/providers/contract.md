@@ -33,8 +33,10 @@ Add a command here only when a feature first needs it. Then add it to every
 provider.
 
 `save-item` is idempotent. Saving the same draft twice leaves one item. It
-checks access for `create-item` and `label` before it changes anything, and
-creates the kind's label or category if it is missing.
+checks access for `create-item` and `label` before it changes anything.
+Providers record the kind natively where they can (an issue type or work
+item type), and fall back to a label or category otherwise. Results report
+which with `via`.
 
 ## Kinds
 
@@ -43,6 +45,7 @@ creates the kind's label or category if it is missing.
 | `epic` | Why the work exists, and what success looks like |
 | `feature` | One capability a persona gains |
 | `task` | One engineering step that delivers a feature |
+| `bug` | Something that does not work as expected |
 
 ## Drafts
 
