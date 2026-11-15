@@ -4,6 +4,7 @@
 
 'use strict';
 
+const fs = require('node:fs');
 const { execFileSync } = require('node:child_process');
 
 const CODES = [
@@ -17,21 +18,26 @@ const CODES = [
   'MISSING_PERMISSION',
   'FEATURE_DISABLED',
   'UNKNOWN_ACTION',
+  'INVALID_DRAFT',
+  'PROVIDER_ERROR',
 ];
 
 const ACTIONS = ['comment', 'create-item', 'label', 'link-child', 'push', 'propose-change'];
 
-const COMMANDS = ['target', 'auth', 'access', 'check'];
+const COMMANDS = ['target', 'auth', 'access', 'check', 'list-items', 'save-item'];
+
+const KINDS = ['epic', 'feature', 'task'];
 
 // Run a command without a shell and never throw. `missing` means the binary
 // is not on PATH.
-function run(cmd, args, { cwd, env } = {}) {
+function run(cmd, args, { cwd, env, input } = {}) {
   try {
     const stdout = execFileSync(cmd, args, {
       cwd,
       env,
+      input,
       encoding: 'utf8',
-      stdio: ['ignore', 'pipe', 'pipe'],
+      stdio: [input === undefined ? 'ignore' : 'pipe', 'pipe', 'pipe'],
     });
     return { ok: true, stdout, stderr: '', missing: false };
   } catch (err) {
@@ -68,6 +74,34 @@ function gitRemote({ exec = run, cwd } = {}) {
   return { ok: true, remote, url };
 }
 
+// Read a draft: one Markdown file whose first line is `# <title>`. The rest
+// is the body. `-` reads the draft from stdin. Adapters never write drafts.
+function readDraft(file) {
+  let text;
+  try {
+    text = fs.readFileSync(file === '-' ? 0 : file, 'utf8');
+  } catch (err) {
+    return fail('INVALID_DRAFT', `Cannot read the draft ${file}: ${err.code || err.message}.`, 'Write the draft to a file and pass its path.');
+  }
+  const m = /^\s*#\s+(.+?)\s*\n([\s\S]*)$/.exec(text.replace(/\r\n/g, '\n') + '\n');
+  if (!m) {
+    return fail('INVALID_DRAFT', 'The draft does not start with a "# <title>" line.', 'Put the title on the first line as "# <title>".');
+  }
+  return { ok: true, title: m[1], body: m[2].trim() + '\n' };
+}
+
+// Parse `--name value` pairs. Returns null on anything unexpected, which the
+// CLI reports as wrong usage.
+function flags(args, names) {
+  const out = {};
+  for (let i = 0; i < args.length; i += 2) {
+    const name = /^--([a-z-]+)$/.exec(args[i]);
+    if (!name || !names.includes(name[1]) || args[i + 1] === undefined || name[1] in out) return null;
+    out[name[1]] = args[i + 1];
+  }
+  return out;
+}
+
 // Run an adapter's command table as a CLI. Each handler takes the remaining
 // argv and returns a result, or null for wrong usage.
 function cli(commands, argv, { stdout = process.stdout, stderr = process.stderr } = {}) {
@@ -83,4 +117,4 @@ function cli(commands, argv, { stdout = process.stdout, stderr = process.stderr 
   return result.ok ? 0 : 1;
 }
 
-module.exports = { CODES, ACTIONS, COMMANDS, run, fail, gitRemote, cli };
+module.exports = { CODES, ACTIONS, COMMANDS, KINDS, run, fail, gitRemote, readDraft, flags, cli };

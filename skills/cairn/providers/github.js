@@ -4,7 +4,7 @@
 
 'use strict';
 
-const { run, fail, gitRemote, cli } = require('./lib.js');
+const { KINDS, run, fail, gitRemote, readDraft, flags, cli } = require('./lib.js');
 
 const PROVIDER = 'github';
 const HOST = 'github.com';
@@ -170,6 +170,100 @@ function check({ exec = run, cwd } = {}) {
   return { ...head, target: t, auth: a, access: acc };
 }
 
+// Each kind is an issue label. Colors apply only when Cairn creates the label.
+// An existing label is never changed.
+const KIND_LABELS = {
+  epic: { color: '3E4B9E', description: 'Why the work exists and what success looks like' },
+  feature: { color: '0E8A16', description: 'A capability a persona gains' },
+  task: { color: 'C5DEF5', description: 'An engineering step that delivers a feature' },
+};
+
+function providerError(what, r) {
+  const detail = (r.stderr || r.stdout || '').trim().split('\n')[0] || 'no details';
+  return fail('PROVIDER_ERROR', `GitHub rejected ${what}: ${detail}`, 'Check the message above, then try again.');
+}
+
+// Create the label, or confirm it exists. Uses no --force, which would
+// overwrite an existing label's color and description.
+function ensureLabel({ exec, repo, kind }) {
+  const { color, description } = KIND_LABELS[kind];
+  const r = exec('gh', ['label', 'create', kind, '--repo', repo, '--color', color, '--description', description]);
+  if (r.ok || /already exists/.test(r.stderr)) return { ok: true };
+  return providerError(`creating the "${kind}" label`, r);
+}
+
+// The open item of this kind with exactly this title, if there is one. Uses
+// the label listing, not search, because GitHub's search index lags behind
+// new issues, and a just-created epic could be missed.
+function findItem({ exec, repo, kind, title }) {
+  const r = exec('gh', ['issue', 'list', '--repo', repo, '--label', kind, '--state', 'open', '--limit', '1000', '--json', 'number,title,url']);
+  if (!r.ok) return providerError(`listing ${kind} issues`, r);
+  const matches = JSON.parse(r.stdout)
+    .filter((i) => i.title.trim() === title.trim())
+    .sort((a, b) => a.number - b.number);
+  return { ok: true, issue: matches[0] || null };
+}
+
+// Open items of one kind, oldest first.
+function listItems({ exec = run, cwd, kind } = {}) {
+  const t = target({ exec, cwd });
+  if (!t.ok) return t;
+  const r = exec('gh', ['issue', 'list', '--repo', t.target, '--label', kind, '--state', 'open', '--limit', '1000', '--json', 'number,title,url']);
+  if (r.missing) return fail('CLI_MISSING', 'The GitHub CLI (gh) is not installed.', 'Install it from https://cli.github.com, then run gh auth login.');
+  if (!r.ok) {
+    if (/gh auth login/.test(r.stderr)) return fail('NOT_LOGGED_IN', `gh is not logged in to ${HOST}.`, LOGIN_FIX);
+    if (/not found/.test(r.stderr)) return { ok: true, provider: PROVIDER, kind, items: [] };
+    return providerError(`listing ${kind} issues`, r);
+  }
+  const items = JSON.parse(r.stdout)
+    .sort((a, b) => a.number - b.number)
+    .map((i) => ({ id: String(i.number), url: i.url, title: i.title }));
+  return { ok: true, provider: PROVIDER, kind, items };
+}
+
+// Create a work item, or update the open one of the same kind and title.
+function saveItem({ exec = run, cwd, kind, file } = {}) {
+  const draft = readDraft(file);
+  if (!draft.ok) return draft;
+
+  const t = target({ exec, cwd });
+  if (!t.ok) return t;
+  const repo = t.target;
+
+  for (const action of ['create-item', 'label']) {
+    const a = access({ exec, cwd, repo, action });
+    if (!a.ok) return a;
+  }
+
+  const label = ensureLabel({ exec, repo, kind });
+  if (!label.ok) return label;
+
+  const found = findItem({ exec, repo, kind, title: draft.title });
+  if (!found.ok) return found;
+
+  const opts = { cwd, input: draft.body };
+  const r = found.issue
+    ? exec('gh', ['issue', 'edit', String(found.issue.number), '--repo', repo, '--body-file', '-'], opts)
+    : exec('gh', ['issue', 'create', '--repo', repo, '--title', draft.title, '--label', kind, '--body-file', '-'], opts);
+  if (!r.ok) return providerError(found.issue ? `updating #${found.issue.number}` : `creating the ${kind}`, r);
+
+  const url = r.stdout.trim().split('\n').pop();
+  const id = found.issue ? String(found.issue.number) : (/\/issues\/(\d+)$/.exec(url) || [])[1];
+  return { ok: true, provider: PROVIDER, kind, created: !found.issue, item: { id, url, title: draft.title } };
+}
+
+function listItemsArgs(args) {
+  const f = flags(args, ['kind']);
+  if (!f || !KINDS.includes(f.kind)) return null;
+  return listItems({ kind: f.kind });
+}
+
+function saveItemArgs(args) {
+  const f = flags(args, ['kind', 'file']);
+  if (!f || !f.kind || !f.file || !KINDS.includes(f.kind)) return null;
+  return saveItem({ kind: f.kind, file: f.file });
+}
+
 function accessArgs(args) {
   if (args.length === 0) return access();
   if (args.length === 2 && args[0] === '--for') return access({ action: args[1] });
@@ -181,10 +275,12 @@ const commands = {
   auth: (args) => (args.length ? null : auth()),
   access: accessArgs,
   check: (args) => (args.length ? null : check()),
+  'list-items': listItemsArgs,
+  'save-item': saveItemArgs,
 };
 
 if (require.main === module) {
   process.exitCode = cli(commands, process.argv.slice(2));
 }
 
-module.exports = { name: PROVIDER, commands, actions: ACTIONS, parseRemote, target, auth, access, check };
+module.exports = { name: PROVIDER, commands, actions: ACTIONS, kinds: KIND_LABELS, parseRemote, target, auth, access, check, listItems, saveItem };

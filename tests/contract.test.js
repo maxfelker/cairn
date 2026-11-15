@@ -11,7 +11,7 @@ const path = require('node:path');
 const { spawnSync } = require('node:child_process');
 
 const DIR = path.join(__dirname, '..', 'skills', 'cairn', 'providers');
-const { CODES, ACTIONS, COMMANDS, fail } = require(path.join(DIR, 'lib.js'));
+const { CODES, ACTIONS, COMMANDS, KINDS, fail } = require(path.join(DIR, 'lib.js'));
 
 const providers = fs.readdirSync(DIR)
   .filter((f) => f.endsWith('.js') && f !== 'lib.js')
@@ -31,6 +31,7 @@ test('contract.md and lib.js agree on codes, actions, and commands', () => {
   assert.deepEqual(tableNames('Codes').sort(), [...CODES].sort());
   assert.deepEqual(tableNames('Actions').sort(), [...ACTIONS].sort());
   assert.deepEqual(tableNames('Commands').sort(), [...COMMANDS].sort());
+  assert.deepEqual(tableNames('Kinds').sort(), [...KINDS].sort());
 });
 
 test('fail() only accepts contract codes', () => {
@@ -51,8 +52,9 @@ for (const { file, mod } of providers) {
     assert.deepEqual(Object.keys(mod.commands).sort(), [...COMMANDS].sort(), 'implements exactly the contract commands');
   });
 
-  test(`${base}: maps every contract action`, () => {
+  test(`${base}: maps every contract action and kind`, () => {
     assert.deepEqual(Object.keys(mod.actions || {}).sort(), [...ACTIONS].sort());
+    assert.deepEqual(Object.keys(mod.kinds || {}).sort(), [...KINDS].sort());
   });
 
   test(`${base}: wrong usage exits 2 with no JSON`, () => {
@@ -66,8 +68,11 @@ for (const { file, mod } of providers) {
   test(`${base}: every command returns a contract result with no tools installed`, () => {
     const cwd = fs.mkdtempSync(path.join(os.tmpdir(), 'cairn-contract-'));
     const emptyPath = fs.mkdtempSync(path.join(os.tmpdir(), 'cairn-path-'));
+    const draft = path.join(cwd, 'draft.md');
+    fs.writeFileSync(draft, '# A title\n\nA body.\n');
+    const sampleArgs = { 'list-items': ['--kind', 'epic'], 'save-item': ['--kind', 'epic', '--file', draft] };
     for (const name of Object.keys(mod.commands)) {
-      const r = spawnSync(process.execPath, [file, name], {
+      const r = spawnSync(process.execPath, [file, name, ...(sampleArgs[name] || [])], {
         cwd,
         encoding: 'utf8',
         env: { PATH: emptyPath, HOME: cwd },

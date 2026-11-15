@@ -16,6 +16,7 @@ allowed-tools:
   - Bash(node --version)
   - Bash(git rev-parse --is-inside-work-tree)
   - Bash(git remote)
+  - Bash(node "${CLAUDE_SKILL_DIR}/structure.js":*)
   - Bash(node "${CLAUDE_SKILL_DIR}/providers/github.js":*)
 ---
 
@@ -127,7 +128,53 @@ Cairn can plan and comment here, but cannot implement changes yet.
 
 ## Workflows
 
-Each delivery workflow (planning an epic, breaking it into features and
-tasks, implementing an issue, handling feedback, releasing) gets its own
-section here as it ships. Until a workflow has a section, follow the design
-rules above and tell the user that Cairn does not support that step yet.
+Each delivery workflow gets its own section here as it ships. If the user
+asks for a step that has no section yet, follow the design rules above and
+tell them Cairn does not support that step yet.
+
+Drafts never go into the repository. Pass a draft to a script on stdin with
+`--file -` (or `-` for `structure.js`), using a quoted heredoc:
+
+```
+node "${CLAUDE_SKILL_DIR}/structure.js" epic - <<'CAIRN_DRAFT'
+# <title>
+...
+CAIRN_DRAFT
+```
+
+### Plan an idea
+
+Use this when the user describes an idea, a product vision, a transcript, or
+a document, and wants it planned ("plan this idea: …", "turn this into an
+epic").
+
+1. **Look for an existing epic.** Run `list-items --kind epic`. If an open
+   epic already covers the same idea, say so, and reuse its exact title, so
+   saving updates that epic instead of creating a second one.
+2. **Draft the epic.** Keep it simple, clear, and human-readable, in prose.
+   It explains the why and the overarching what. It may cover more than one
+   persona or outcome. Use these sections, in this order:
+   - `# <title>`: a short name for the outcome.
+   - `## Why`: why this matters.
+   - `## Who it is for`: the personas who benefit.
+   - `## In scope`, then `## Out of scope`.
+   - `## What success looks like`.
+   - `## Acceptance Criteria`: always last. List the feature-level
+     capabilities that must exist for the epic to be complete, one per
+     line, as `- [ ] A <persona> can <do or perceive something>`.
+
+   A persona is someone or something that experiences the capability: a
+   customer, a player, a reviewer, an enemy AI. A developer is not a
+   persona. Never name a system, component, or foundation as a criterion.
+   Use only what the user said, plus reasonable inferences. If you can't
+   tell who the work is for, or what success means, ask one short question
+   before drafting.
+3. **Check the structure.** Pipe the draft to `structure.js epic -`. Fix
+   every problem it lists, then check again until it returns `ok`.
+4. **Save it.** Pipe the same draft to the provider's
+   `save-item --kind epic --file -`. This checks access, creates the epic
+   (or updates the open one with the same title), and makes sure the kind
+   exists in the provider.
+5. **Reply briefly.** Give the link, whether the epic was created or
+   updated, and its acceptance criteria in one line each. Suggest breaking
+   it into features as the next step.
