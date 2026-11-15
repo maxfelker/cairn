@@ -139,3 +139,87 @@ test('structure.js stays provider-neutral', () => {
   const source = fs.readFileSync(SCRIPT, 'utf8');
   assert.doesNotMatch(source, /github|gitlab|jira|azure|\bgh\b|pull request/i);
 });
+
+// Features
+
+const { checkFeature } = require('../skills/cairn/structure.js');
+
+const FEATURE = `# A player can move the camera with WASD
+
+A player pans the camera across the map by holding W, A, S, or D.
+
+## Expected behavior
+
+- Holding W moves the view north; releasing it stops.
+- The camera never leaves the map bounds.
+
+## Acceptance Criteria
+
+- [ ] Set up the terrain scene the camera moves over
+- [ ] Add the camera input handler
+`;
+
+function featureProblems(text) {
+  const result = checkFeature(text);
+  assert.equal(result.ok, false, 'expected the feature to be rejected');
+  return result.problems.join('\n');
+}
+
+test('feature: a well-formed feature passes', () => {
+  assert.deepEqual(checkFeature(FEATURE), { ok: true, kind: 'feature', title: 'A player can move the camera with WASD' });
+});
+
+test('feature: the title must be one persona capability', () => {
+  const cases = {
+    'Camera movement': /is not a capability/,
+    'A developer can wire up input': /A developer is not a persona/,
+    'A camera system can pan': /names a system part/,
+    'A player can move and zoom the camera': /more than one capability/,
+    'A player can pan or rotate the camera': /more than one capability/,
+  };
+  for (const [title, want] of Object.entries(cases)) {
+    assert.match(featureProblems(FEATURE.replace('A player can move the camera with WASD', title)), want, title);
+  }
+});
+
+test('feature: "and" between personas is one capability, not two', () => {
+  const text = FEATURE.replace('A player can move the camera with WASD', 'A borrower and an owner can see the status of a loan');
+  assert.equal(checkFeature(text).ok, true);
+});
+
+test('feature: the body opens with prose before any heading', () => {
+  assert.match(featureProblems(FEATURE.replace('A player pans the camera across the map by holding W, A, S, or D.\n', '')), /Start the body with plain prose/);
+  assert.match(featureProblems(FEATURE.replace('A player pans the camera across the map by holding W, A, S, or D.', '- just a list')), /Start the body with plain prose/);
+});
+
+test('feature: expected behavior and acceptance criteria are required', () => {
+  assert.match(featureProblems(FEATURE.replace('## Expected behavior', '## Notes')), /Missing the "Expected behavior" section/);
+  assert.match(featureProblems(FEATURE.replace(/## Expected behavior\n\n- Holding.*\n- The camera.*\n/, '## Expected behavior\n\n')), /"Expected behavior" section is empty/);
+  assert.match(featureProblems(FEATURE.replace(/## Acceptance Criteria[\s\S]*$/, '')), /Missing the "Acceptance Criteria" section/);
+  assert.match(featureProblems(FEATURE.replace(/## Acceptance Criteria\n[\s\S]*$/, '## Acceptance Criteria\n\nLater.\n')), /has no items/);
+  // Unlike an epic, a feature may have sections after its criteria, such as Tasks.
+  assert.equal(checkFeature(`${FEATURE}\n## Tasks\n\n- [ ] #14\n`).ok, true);
+});
+
+test('feature: task criteria are free text or references', () => {
+  const text = FEATURE.replace('- [ ] Add the camera input handler', '- [ ] #14\n- [ ] CAM-7');
+  assert.equal(checkFeature(text).ok, true);
+});
+
+// Epics after decomposition
+
+test('epic: acceptance criteria may be references to child items', () => {
+  const text = GOOD.replace(/## Acceptance Criteria\n[\s\S]*$/, '## Acceptance Criteria\n\n- [ ] #2\n- [x] #3\n- [ ] TRADE-12\n');
+  assert.equal(checkEpic(text).ok, true);
+  const mixed = GOOD.replace('- [ ] A player can see a caravan travel along the road', '- [ ] #2 and more');
+  assert.equal(checkEpic(mixed).ok, false, 'a reference with extra text is not a bare reference');
+});
+
+test('CLI checks features', () => {
+  const dir = fs.mkdtempSync(path.join(os.tmpdir(), 'cairn-structure-'));
+  const file = path.join(dir, 'f.md');
+  fs.writeFileSync(file, FEATURE);
+  assert.equal(spawnSync(process.execPath, [SCRIPT, 'feature', file], { encoding: 'utf8' }).status, 0);
+  const viaStdin = spawnSync(process.execPath, [SCRIPT, 'feature', '-'], { input: '# Camera\n', encoding: 'utf8' });
+  assert.equal(viaStdin.status, 1);
+});
