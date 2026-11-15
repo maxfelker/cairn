@@ -4,7 +4,7 @@
 
 'use strict';
 
-const { KINDS, run, fail, gitRemote, readDraft, flags, cli } = require('./lib.js');
+const { KINDS, run, fail, gitRemote, readDraft, readBody, flags, cli } = require('./lib.js');
 
 const PROVIDER = 'github';
 const HOST = 'github.com';
@@ -461,6 +461,59 @@ function orderChildrenArgs(args) {
   return orderChildren({ parent: f.parent, ids });
 }
 
+// Every Cairn comment ends with a hidden marker, so people and tools can tell
+// it is Cairn's. A keyed marker makes a comment updatable: posting with the
+// same key edits that comment instead of adding another.
+function marker(key) {
+  return key ? `<!-- cairn key=${key} -->` : '<!-- cairn -->';
+}
+
+function comment({ exec = run, cwd, id, file, key } = {}) {
+  const body = readBody(file);
+  if (!body.ok) return body;
+
+  const t = target({ exec, cwd });
+  if (!t.ok) return t;
+  const repo = t.target;
+  const ctx = { exec, cwd };
+
+  const a = access({ exec, cwd, repo, action: 'comment' });
+  if (!a.ok) return a;
+
+  const issue = api(ctx, [`repos/${repo}/issues/${id}`]);
+  if (!issue.ok) {
+    if (issue.result) return issue.result;
+    return fail('TARGET_UNAVAILABLE', `#${id} was not found in ${repo}.`, 'Check the item number.');
+  }
+
+  const mark = marker(key);
+  const text = `${body.text}\n\n${mark}`;
+
+  let existing = null;
+  if (key) {
+    const list = apiList(ctx, `repos/${repo}/issues/${id}/comments?per_page=100`);
+    if (!list.ok) return failed(list, `reading comments on #${id}`);
+    existing = list.data.find((c) => (c.body || '').split('\n').some((line) => line.trim() === mark)) || null;
+  }
+
+  const toComment = (c) => ({ id: String(c.id), url: c.html_url });
+  if (existing && existing.body === text) {
+    return { ok: true, provider: PROVIDER, comment: toComment(existing), created: false, changed: false };
+  }
+  const res = existing
+    ? api(ctx, ['-X', 'PATCH', `repos/${repo}/issues/comments/${existing.id}`], { body: text })
+    : api(ctx, ['-X', 'POST', `repos/${repo}/issues/${id}/comments`], { body: text });
+  if (!res.ok) return failed(res, existing ? `updating a comment on #${id}` : `commenting on #${id}`);
+  return { ok: true, provider: PROVIDER, comment: toComment(res.data), created: !existing, changed: true };
+}
+
+function commentArgs(args) {
+  const f = flags(args, ['on', 'file', 'key']);
+  if (!f || !/^\d+$/.test(f.on || '') || !f.file) return null;
+  if (f.key !== undefined && !/^[a-z0-9][a-z0-9._-]*$/i.test(f.key)) return null;
+  return comment({ id: f.on, file: f.file, key: f.key });
+}
+
 function listItemsArgs(args) {
   const f = flags(args, ['kind']);
   if (!f || !KINDS.includes(f.kind)) return null;
@@ -485,6 +538,7 @@ const commands = {
   auth: (args) => (args.length ? null : auth()),
   access: accessArgs,
   check: (args) => (args.length ? null : check()),
+  comment: commentArgs,
   'get-item': getItemArgs,
   'list-items': listItemsArgs,
   'order-children': orderChildrenArgs,
@@ -495,4 +549,4 @@ if (require.main === module) {
   process.exitCode = cli(commands, process.argv.slice(2));
 }
 
-module.exports = { name: PROVIDER, commands, actions: ACTIONS, kinds: KIND_LABELS, parseRemote, target, auth, access, check, getItem, listItems, orderChildren, saveItem };
+module.exports = { name: PROVIDER, commands, marker, comment, actions: ACTIONS, kinds: KIND_LABELS, parseRemote, target, auth, access, check, getItem, listItems, orderChildren, saveItem };

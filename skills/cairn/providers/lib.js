@@ -24,7 +24,7 @@ const CODES = [
 
 const ACTIONS = ['comment', 'create-item', 'label', 'link-child', 'push', 'propose-change'];
 
-const COMMANDS = ['target', 'auth', 'access', 'check', 'get-item', 'list-items', 'order-children', 'save-item'];
+const COMMANDS = ['target', 'auth', 'access', 'check', 'comment', 'get-item', 'list-items', 'order-children', 'save-item'];
 
 const KINDS = ['epic', 'feature', 'task', 'bug'];
 
@@ -90,6 +90,18 @@ function readDraft(file) {
   return { ok: true, title: m[1], body: m[2].trim() + '\n' };
 }
 
+// Read a comment or other plain body from a file, or `-` for stdin.
+function readBody(file) {
+  let text;
+  try {
+    text = fs.readFileSync(file === '-' ? 0 : file, 'utf8');
+  } catch (err) {
+    return fail('INVALID_DRAFT', `Cannot read ${file}: ${err.code || err.message}.`, 'Write the text to a file, or pass it on stdin with -.');
+  }
+  if (!text.trim()) return fail('INVALID_DRAFT', 'The text is empty.', 'Pass the comment text to send.');
+  return { ok: true, text: text.replace(/\s+$/, '') };
+}
+
 // Parse `--name value` pairs. Returns null on anything unexpected, which the
 // CLI reports as wrong usage.
 function flags(args, names) {
@@ -117,4 +129,4 @@ function cli(commands, argv, { stdout = process.stdout, stderr = process.stderr 
   return result.ok ? 0 : 1;
 }
 
-module.exports = { CODES, ACTIONS, COMMANDS, KINDS, run, fail, gitRemote, readDraft, flags, cli };
+module.exports = { CODES, ACTIONS, COMMANDS, KINDS, run, fail, gitRemote, readDraft, readBody, flags, cli };

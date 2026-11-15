@@ -33,6 +33,10 @@ state.issues = (state.issues || []).map((i) => ({
 }));
 state.issueTypes = state.issueTypes === undefined ? [] : state.issueTypes;
 state.subOrder = state.subOrder || {};
+state.nextCommentId = state.nextCommentId || 7001;
+for (const issue of state.issues) {
+  issue.comments = issue.comments.map((c) => (c.id ? c : { ...c, id: state.nextCommentId++ }));
+}
 state.calls = state.calls || [];
 const argv = process.argv.slice(2);
 state.calls.push(argv);
@@ -190,6 +194,19 @@ if (group === 'api') {
 
   const [pathPart, queryPart = ''] = opts.path.split('?');
   const query = Object.fromEntries(new URLSearchParams(queryPart));
+  const restComment = (issue, c) => ({ id: c.id, body: c.body, user: { login: c.author }, html_url: `https://github.com/${state.repo}/issues/${issue.number}#issuecomment-${c.id}` });
+
+  const editComment = /^repos\/([^/]+\/[^/]+)\/issues\/comments\/(\d+)$/.exec(pathPart);
+  if (editComment && opts.method === 'PATCH') {
+    requireRepo(editComment[1]);
+    const id = Number(editComment[2]);
+    const issue = state.issues.find((i) => i.comments.some((c) => c.id === id));
+    if (!issue) httpError(404, 'Not Found');
+    const c = issue.comments.find((x) => x.id === id);
+    if (c.author !== state.login) httpError(403, 'Resource not accessible by integration');
+    c.body = readInput().body;
+    json(restComment(issue, c));
+  }
   const m = /^repos\/([^/]+\/[^/]+)\/issues(?:\/(\d+))?(?:\/(comments|sub_issues|sub_issues\/priority|parent|labels))?$/.exec(pathPart);
   if (!m) unsupported(`api path ${opts.path}`);
   const [, repo, number, sub] = m;
@@ -237,7 +254,15 @@ if (group === 'api') {
   }
 
   if (number && sub === 'comments' && opts.method === 'GET') {
-    page(findIssue(number).comments.map((c, i) => ({ id: i + 1, body: c.body, user: { login: c.author } })));
+    const issue = findIssue(number);
+    page(issue.comments.map((c) => restComment(issue, c)));
+  }
+
+  if (number && sub === 'comments' && opts.method === 'POST') {
+    const issue = findIssue(number);
+    const c = { id: state.nextCommentId++, author: state.login, body: readInput().body };
+    issue.comments.push(c);
+    json(restComment(issue, c));
   }
 
   if (number && sub === 'labels' && opts.method === 'POST') {
