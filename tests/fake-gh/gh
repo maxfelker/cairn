@@ -32,6 +32,7 @@ state.issues = (state.issues || []).map((i) => ({
   id: i.number + 9000, state: 'OPEN', labels: [], type: null, parent: null, comments: [], body: '', ...i,
 }));
 state.issueTypes = state.issueTypes === undefined ? [] : state.issueTypes;
+state.subOrder = state.subOrder || {};
 state.calls = state.calls || [];
 const argv = process.argv.slice(2);
 state.calls.push(argv);
@@ -92,6 +93,15 @@ function findIssue(number) {
   const issue = state.issues.find((i) => i.number === Number(number));
   if (!issue) httpError(404, 'Not Found');
   return issue;
+}
+
+// A parent's children in priority order: the recorded order first, then any
+// other children by number.
+function childrenOf(parentNumber) {
+  const kids = state.issues.filter((i) => i.parent === parentNumber);
+  const order = (state.subOrder[parentNumber] || []).filter((n) => kids.some((k) => k.number === n));
+  const rest_ = kids.map((k) => k.number).filter((n) => !order.includes(n)).sort((a, b) => a - b);
+  return [...order, ...rest_].map((n) => kids.find((k) => k.number === n));
 }
 
 function readInput() {
@@ -180,7 +190,7 @@ if (group === 'api') {
 
   const [pathPart, queryPart = ''] = opts.path.split('?');
   const query = Object.fromEntries(new URLSearchParams(queryPart));
-  const m = /^repos\/([^/]+\/[^/]+)\/issues(?:\/(\d+))?(?:\/(comments|sub_issues|parent))?$/.exec(pathPart);
+  const m = /^repos\/([^/]+\/[^/]+)\/issues(?:\/(\d+))?(?:\/(comments|sub_issues|sub_issues\/priority|parent|labels))?$/.exec(pathPart);
   if (!m) unsupported(`api path ${opts.path}`);
   const [, repo, number, sub] = m;
   requireRepo(repo);
@@ -230,6 +240,16 @@ if (group === 'api') {
     page(findIssue(number).comments.map((c, i) => ({ id: i + 1, body: c.body, user: { login: c.author } })));
   }
 
+  if (number && sub === 'labels' && opts.method === 'POST') {
+    if (!atLeast('TRIAGE')) httpError(403, 'Must have triage access to add labels');
+    const issue = findIssue(number);
+    for (const l of readInput().labels) {
+      if (!state.labels.some((x) => x.name === l)) httpError(422, `Validation Failed: label '${l}' does not exist`);
+      if (!issue.labels.includes(l)) issue.labels.push(l);
+    }
+    json(issue.labels.map((name) => ({ name })));
+  }
+
   if (number && sub === 'parent' && opts.method === 'GET') {
     const child = findIssue(number);
     if (!child.parent) httpError(404, 'No parent issue found');
@@ -237,8 +257,23 @@ if (group === 'api') {
   }
 
   if (number && sub === 'sub_issues' && opts.method === 'GET') {
+    page(childrenOf(findIssue(number).number).map(rest));
+  }
+
+  if (number && sub === 'sub_issues/priority' && opts.method === 'PATCH') {
+    if (!atLeast('TRIAGE')) httpError(403, 'Must have triage access to reprioritize sub-issues');
     const parent = findIssue(number);
-    page(state.issues.filter((i) => i.parent === parent.number).map(rest));
+    const body = readInput();
+    const kids = childrenOf(parent.number);
+    const byId = (id) => kids.find((k) => k.id === id);
+    const child = byId(body.sub_issue_id);
+    const anchor = byId(body.after_id !== undefined ? body.after_id : body.before_id);
+    if (!child || !anchor) httpError(422, 'Validation Failed: sub_issue_id, after_id, and before_id must be sub-issues of this issue');
+    const order = kids.map((k) => k.number).filter((n) => n !== child.number);
+    const at = order.indexOf(anchor.number) + (body.after_id !== undefined ? 1 : 0);
+    order.splice(at, 0, child.number);
+    state.subOrder[parent.number] = order;
+    json(rest(parent));
   }
 
   if (number && sub === 'sub_issues' && opts.method === 'POST') {
@@ -249,6 +284,7 @@ if (group === 'api') {
     if (child.parent === parent.number) httpError(422, 'Validation Failed: Issue may not contain duplicate sub-issues');
     if (child.parent) httpError(422, 'Validation Failed: Issue may only have one parent');
     child.parent = parent.number;
+    state.subOrder[parent.number] = [...childrenOf(parent.number).map((k) => k.number).filter((n) => n !== child.number), child.number];
     json(rest(parent));
   }
 

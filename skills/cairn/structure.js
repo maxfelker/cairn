@@ -136,6 +136,49 @@ function checkFeature(text) {
     : { ok: true, kind: 'feature', title };
 }
 
+const TASK_SECTIONS = [
+  { key: 'guidance', label: 'Implementation guidance', names: ['implementation guidance', 'implementation', 'guidance', 'how'] },
+  { key: 'validation', label: 'Validation', names: ['validation', 'how to validate', 'testing'] },
+  { key: 'done', label: 'Done when', names: ['done when', 'done criteria', 'definition of done', 'done'] },
+];
+
+// A task is one engineering step behind a feature: the "how". Its title is
+// an action, not a persona capability. Its body says what to do, how to
+// validate it, and when it is done.
+function checkTask(text) {
+  const problems = [];
+  const { title, intro, sections } = parse(text);
+
+  if (!title) {
+    problems.push('The draft must start with a "# <title>" line.');
+  } else if (/^an?\s+.+?\s+can\s+/i.test(title)) {
+    problems.push(`The title "${title}" is a persona capability, which makes it a feature. Name the engineering step instead, such as "Add …", or propose it as a feature.`);
+  } else if (/^(a|an|the)\s/i.test(title)) {
+    problems.push(`The title "${title}" should name an action. Start it with a verb, such as "Add …" or "Move …".`);
+  }
+
+  if (!intro.some((l) => l.trim() !== '' && !/^\s*([-*]|\d+\.)\s/.test(l))) {
+    problems.push('Start the body with plain prose saying what this step does and why, before any heading.');
+  }
+
+  for (const want of TASK_SECTIONS) {
+    const section = sections.find((sec) => want.names.includes(sec.name));
+    if (!section) {
+      problems.push(`Missing the "${want.label}" section. Add a "## ${want.label}" heading.`);
+    } else if (want.key === 'done') {
+      if (!section.lines.some((l) => /^\s*[-*]\s+\[[ xX]\]\s+\S/.test(l))) {
+        problems.push('"Done when" needs at least one checklist item, such as "- [ ] …".');
+      }
+    } else if (!section.lines.some((l) => l.trim() !== '')) {
+      problems.push(`The "${section.heading}" section is empty.`);
+    }
+  }
+
+  return problems.length
+    ? { ok: false, kind: 'task', problems }
+    : { ok: true, kind: 'task', title };
+}
+
 function checkEpic(text) {
   const problems = [];
   const { title, sections } = parse(text);
@@ -175,7 +218,7 @@ function checkEpic(text) {
     : { ok: true, kind: 'epic', title };
 }
 
-const CHECKS = { epic: checkEpic, feature: checkFeature };
+const CHECKS = { epic: checkEpic, feature: checkFeature, task: checkTask };
 
 function main(argv) {
   const [kind, file, ...rest] = argv;
@@ -199,4 +242,4 @@ if (require.main === module) {
   process.exitCode = main(process.argv.slice(2));
 }
 
-module.exports = { parse, checkEpic, checkFeature, criterionProblem, EPIC_SECTIONS, FEATURE_SECTIONS };
+module.exports = { parse, checkEpic, checkFeature, checkTask, criterionProblem, EPIC_SECTIONS, FEATURE_SECTIONS, TASK_SECTIONS };

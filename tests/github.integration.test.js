@@ -175,14 +175,36 @@ test('save-item: reads the draft from stdin with --file -', () => {
 const TYPED = { issueTypes: ['Task', 'Bug', 'Feature'] };
 const FEATURE = '# A player can move the camera with WASD\n\nThe camera pans when a player holds W, A, S, or D.\n';
 
-test('types: a feature in a typed repo gets the Feature type and no label', () => {
+test('types: a feature in a typed repo gets the Feature type and the feature label as backup', () => {
   const gh = fakeGitHub(TYPED);
   const { json } = gh.run('save-item', '--kind', 'feature', '--file', gh.draft('f.md', FEATURE));
   assert.equal(json.via, 'type');
   const [issue] = gh.state().issues;
   assert.equal(issue.type, 'Feature');
-  assert.deepEqual(issue.labels, []);
-  assert.equal(gh.state().labels.length, 0, 'no label created');
+  assert.deepEqual(issue.labels, ['feature']);
+  assert.deepEqual(gh.state().labels.map((l) => l.name), ['feature']);
+});
+
+test('backup label: an update adds a missing kind label and keeps the others', () => {
+  const gh = fakeGitHub({
+    ...TYPED,
+    labels: [{ name: 'priority', color: 'ffffff', description: '' }],
+    issues: [{ number: 1, title: 'A player can move the camera with WASD', type: 'Feature', labels: ['priority'] }],
+  });
+  const { json } = gh.run('save-item', '--kind', 'feature', '--file', gh.draft('f.md', FEATURE));
+  assert.equal(json.created, false);
+  assert.deepEqual(gh.state().issues[0].labels, ['priority', 'feature']);
+});
+
+test('backup label: an item that already has it makes no label call', () => {
+  const gh = fakeGitHub({
+    ...TYPED,
+    labels: [{ name: 'feature', color: '123456', description: 'Ours' }],
+    issues: [{ number: 1, title: 'A player can move the camera with WASD', type: 'Feature', labels: ['feature'] }],
+  });
+  gh.run('save-item', '--kind', 'feature', '--file', gh.draft('f.md', FEATURE));
+  assert.equal(gh.state().calls.filter((c) => c.some((a) => a.endsWith('/labels'))).length, 0);
+  assert.deepEqual(gh.state().labels, [{ name: 'feature', color: '123456', description: 'Ours' }], 'existing label not recolored');
 });
 
 test('types: bug and task use their types too', () => {
@@ -267,6 +289,7 @@ test('parent: a new feature is created and linked under its epic by database id'
   const feature = gh.state().issues.find((i) => i.number === 2);
   assert.equal(feature.parent, 1);
   assert.equal(feature.type, 'Feature');
+  assert.deepEqual(feature.labels, ['feature']);
   const link = gh.state().calls.find((c) => c.includes('repos/octo/repo/issues/1/sub_issues') && c.includes('POST'));
   assert.ok(link.includes(`sub_issue_id=${feature.id}`), `links by database id ${feature.id}, not number 2: ${link.join(' ')}`);
 });
@@ -334,7 +357,8 @@ test('get-item: returns the body, comments, and children with their kinds', () =
   });
   const { status, json } = gh.run('get-item', '--id', '1');
   assert.equal(status, 0, JSON.stringify(json));
-  assert.deepEqual(json.item, { id: '1', url: 'https://github.com/octo/repo/issues/1', title: 'Trading', kind: 'epic', state: 'open', body: 'Why…' });
+  assert.deepEqual(json.item, { id: '1', url: 'https://github.com/octo/repo/issues/1', title: 'Trading', kind: 'epic', state: 'open', body: 'Why…', parent: null });
+  assert.equal(gh.run('get-item', '--id', '2').json.item.parent, '1');
   assert.deepEqual(json.comments, [{ author: 'pm', body: 'Include allies?' }, { author: 'octo', body: 'Later.' }]);
   assert.deepEqual(json.children, [
     { id: '2', title: 'A player can trade food', kind: 'feature', state: 'open' },
@@ -349,4 +373,61 @@ test('get-item: an item with no children, and a missing item', () => {
   assert.equal(json.item.kind, null);
   assert.equal(gh.run('get-item', '--id', '42').json.code, 'TARGET_UNAVAILABLE');
   assert.equal(gh.run('get-item', '--id', 'x').status, 2);
+});
+
+// order-children: the children's order is the task order.
+
+function withChildren(numbers) {
+  return {
+    ...TYPED,
+    issues: [{ number: 1, title: 'A player can move the camera', type: 'Feature' }, ...numbers.map((n) => ({ number: n, title: `Task ${n}`, type: 'Task', parent: 1 }))],
+  };
+}
+const childOrder = (gh) => gh.run('get-item', '--id', '1').json.children.map((c) => c.id);
+const priorityCalls = (gh) => gh.state().calls.filter((c) => c.some((a) => a.endsWith('/sub_issues/priority')));
+
+test('order-children: moves a prerequisite ahead of the tasks that depend on it', () => {
+  const gh = fakeGitHub(withChildren([2, 3, 4]));
+  const { status, json } = gh.run('order-children', '--parent', '1', '--ids', '4,2,3');
+  assert.equal(status, 0, JSON.stringify(json));
+  assert.deepEqual(json.order, ['4', '2', '3']);
+  assert.equal(json.moved, 1);
+  assert.deepEqual(childOrder(gh), ['4', '2', '3']);
+});
+
+test('order-children: unlisted children keep their order after the listed ones', () => {
+  const gh = fakeGitHub(withChildren([2, 3, 4, 5]));
+  gh.run('order-children', '--parent', '1', '--ids', '5,3');
+  assert.deepEqual(childOrder(gh), ['5', '3', '2', '4']);
+});
+
+test('order-children: an order that is already right makes no calls', () => {
+  const gh = fakeGitHub(withChildren([2, 3, 4]));
+  const { json } = gh.run('order-children', '--parent', '1', '--ids', '2,3,4');
+  assert.equal(json.moved, 0);
+  assert.equal(priorityCalls(gh).length, 0);
+});
+
+test('order-children: uses database ids, not issue numbers', () => {
+  const gh = fakeGitHub(withChildren([2, 3]));
+  gh.run('order-children', '--parent', '1', '--ids', '3,2');
+  const [call] = priorityCalls(gh);
+  assert.ok(call, 'a reprioritize call was made');
+  assert.deepEqual(childOrder(gh), ['3', '2'], 'the mock only accepts database ids, so this order proves they were used');
+});
+
+test('order-children: a non-child changes nothing, and bad arguments are usage errors', () => {
+  const gh = fakeGitHub(withChildren([2, 3]));
+  const { json } = gh.run('order-children', '--parent', '1', '--ids', '3,9');
+  assert.equal(json.code, 'TARGET_UNAVAILABLE');
+  assert.match(json.message, /#9/);
+  assert.equal(priorityCalls(gh).length, 0);
+  for (const args of [['--parent', '1'], ['--parent', '1', '--ids', '2,,3'], ['--parent', '1', '--ids', '2,2'], ['--parent', 'x', '--ids', '2']]) {
+    assert.equal(gh.run('order-children', ...args).status, 2, args.join(' '));
+  }
+});
+
+test('order-children: needs TRIAGE', () => {
+  const gh = fakeGitHub({ ...withChildren([2, 3]), permission: 'READ' });
+  assert.equal(gh.run('order-children', '--parent', '1', '--ids', '3,2').json.code, 'MISSING_PERMISSION');
 });

@@ -223,3 +223,57 @@ test('CLI checks features', () => {
   const viaStdin = spawnSync(process.execPath, [SCRIPT, 'feature', '-'], { input: '# Camera\n', encoding: 'utf8' });
   assert.equal(viaStdin.status, 1);
 });
+
+// Tasks
+
+const { checkTask } = require('../skills/cairn/structure.js');
+
+const TASK = `# Add the camera input handler
+
+Read W, A, S, and D each frame and pan the camera, so the movement feature has its first working step.
+
+## Implementation guidance
+
+- Reuse the engine's input map; no new input library.
+
+## Validation
+
+- Unit test: holding W for one second moves the camera north by the configured speed.
+
+## Done when
+
+- [ ] Holding W, A, S, or D pans the camera.
+`;
+
+function taskProblems(text) {
+  const result = checkTask(text);
+  assert.equal(result.ok, false, 'expected the task to be rejected');
+  return result.problems.join('\n');
+}
+
+test('task: a well-formed task passes', () => {
+  assert.deepEqual(checkTask(TASK), { ok: true, kind: 'task', title: 'Add the camera input handler' });
+});
+
+test('task: the title is an engineering step, not a capability', () => {
+  assert.match(taskProblems(TASK.replace('Add the camera input handler', 'A player can move the camera')), /is a persona capability, which makes it a feature/);
+  assert.match(taskProblems(TASK.replace('Add the camera input handler', 'The camera input handler')), /should name an action/);
+  assert.match(taskProblems(TASK.replace(/^# .*\n/, '')), /must start with a "# <title>"/);
+});
+
+test('task: the body opens with prose', () => {
+  assert.match(taskProblems(TASK.replace(/Read W, A, S.*\n/, '')), /Start the body with plain prose/);
+});
+
+test('task: guidance, validation, and done criteria are required', () => {
+  for (const heading of ['Implementation guidance', 'Validation', 'Done when']) {
+    assert.match(taskProblems(TASK.replace(`## ${heading}`, '## Notes')), new RegExp(`Missing the "${heading}" section`), heading);
+  }
+  assert.match(taskProblems(TASK.replace('- Reuse the engine\'s input map; no new input library.', '')), /"Implementation guidance" section is empty/);
+  assert.match(taskProblems(TASK.replace('- [ ] Holding W, A, S, or D pans the camera.', 'When it works.')), /needs at least one checklist item/);
+});
+
+test('task: alternate headings are accepted', () => {
+  const text = TASK.replace('## Implementation guidance', '## How').replace('## Validation', '## Testing').replace('## Done when', '## Definition of done');
+  assert.equal(checkTask(text).ok, true);
+});

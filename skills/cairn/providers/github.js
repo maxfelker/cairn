@@ -170,8 +170,9 @@ function check({ exec = run, cwd } = {}) {
   return { ...head, target: t, auth: a, access: acc };
 }
 
-// Fallback labels for repositories without a matching issue type. Colors apply
-// only when Cairn creates the label. An existing label is never changed.
+// Kind labels: the backup on typed items, and the only marker where no type
+// exists. Colors apply only when Cairn creates the label. An existing label is
+// never changed.
 const KIND_LABELS = {
   bug: { color: 'D73A4A', description: 'Something is not working' },
   epic: { color: '3E4B9E', description: 'Why the work exists and what success looks like' },
@@ -217,7 +218,8 @@ function issueTypes(ctx, repo) {
 }
 
 // How a kind is recorded on GitHub: the native issue type with the same name
-// if the repository has one, otherwise a label. Labels are the fallback.
+// if the repository has one, with the kind label as a backup. Without a type,
+// the label alone.
 function kindSpec(kind, types) {
   const type = types.find((t) => t.toLowerCase() === kind);
   return type ? { via: 'type', type, label: kind } : { via: 'label', label: kind };
@@ -330,11 +332,11 @@ function saveItem({ exec = run, cwd, kind, file, parent } = {}) {
     }
   }
 
+  // The type is the kind where one exists. The label is always set too,
+  // as a backup that any tool or filter can read.
   const spec = kindSpec(kind, issueTypes(ctx, repo));
-  if (spec.via === 'label') {
-    const label = ensureLabel({ exec, repo, kind });
-    if (!label.ok) return label;
-  }
+  const label = ensureLabel({ exec, repo, kind });
+  if (!label.ok) return label;
 
   const found = findExisting(ctx, repo, spec, draft.title, parent);
   if (!found.ok) return failed(found, `listing ${kind} issues`);
@@ -345,9 +347,17 @@ function saveItem({ exec = run, cwd, kind, file, parent } = {}) {
     : api(ctx, ['-X', 'POST', `repos/${repo}/issues`], {
       title: draft.title,
       body: draft.body,
-      ...(spec.via === 'type' ? { type: spec.type } : { labels: [spec.label] }),
+      labels: [spec.label],
+      ...(spec.via === 'type' ? { type: spec.type } : {}),
     });
   if (!res.ok) return failed(res, existing ? `updating #${existing.number}` : `creating the ${kind}`);
+
+  // An existing item missing the backup label gets it added. POST adds to
+  // the label set, whereas PATCH with labels would replace it.
+  if (existing && !existing.labels.some((l) => (typeof l === 'string' ? l : l.name) === spec.label)) {
+    const add = api(ctx, ['-X', 'POST', `repos/${repo}/issues/${existing.number}/labels`], { labels: [spec.label] });
+    if (!add.ok) return failed(add, `labeling #${existing.number}`);
+  }
 
   const result = { ok: true, provider: PROVIDER, kind, via: spec.via, created: !existing, item: toItem(res.data) };
   if (parent) {
@@ -384,12 +394,14 @@ function getItem({ exec = run, cwd, id } = {}) {
   if (!comments.ok) return failed(comments, `reading comments on #${id}`);
   const children = apiList(ctx, `repos/${repo}/issues/${id}/sub_issues?per_page=100`);
   if (!children.ok) return failed(children, `reading sub-issues of #${id}`);
+  const parent = api(ctx, [`repos/${repo}/issues/${id}/parent`]);
+  if (!parent.ok && !(parent.r && /404/.test(parent.r.stderr))) return failed(parent, `reading the parent of #${id}`);
 
   const i = issue.data;
   return {
     ok: true,
     provider: PROVIDER,
-    item: { ...toItem(i), kind: kindOf(i), state: i.state, body: i.body || '' },
+    item: { ...toItem(i), kind: kindOf(i), state: i.state, body: i.body || '', parent: parent.ok ? String(parent.data.number) : null },
     comments: comments.data.map((c) => ({ author: c.user && c.user.login, body: c.body })),
     children: children.data.map((c) => ({ id: String(c.number), title: c.title, kind: kindOf(c), state: c.state })),
   };
@@ -399,6 +411,54 @@ function getItemArgs(args) {
   const f = flags(args, ['id']);
   if (!f || !/^\d+$/.test(f.id || '')) return null;
   return getItem({ id: f.id });
+}
+
+// Put the listed children first, in that order. Unlisted children keep
+// their relative order after them. Moves only children that are out of
+// place, using GitHub's native reprioritize endpoint with database ids.
+function orderChildren({ exec = run, cwd, parent, ids } = {}) {
+  const t = target({ exec, cwd });
+  if (!t.ok) return t;
+  const repo = t.target;
+  const ctx = { exec, cwd };
+
+  const a = access({ exec, cwd, repo, action: 'link-child' });
+  if (!a.ok) return a;
+
+  const kids = apiList(ctx, `repos/${repo}/issues/${parent}/sub_issues?per_page=100`);
+  if (!kids.ok) {
+    if (kids.result) return kids.result;
+    return fail('TARGET_UNAVAILABLE', `#${parent} was not found in ${repo}.`, 'Check the parent item number.');
+  }
+  const byNumber = new Map(kids.data.map((k) => [String(k.number), k]));
+  const missing = ids.filter((id) => !byNumber.has(id));
+  if (missing.length) {
+    return fail('TARGET_UNAVAILABLE', `Not children of #${parent}: ${missing.map((m) => `#${m}`).join(', ')}.`, `Link them under #${parent} first, or leave them out of the order.`);
+  }
+
+  const current = kids.data.map((k) => String(k.number));
+  const desired = [...ids, ...current.filter((n) => !ids.includes(n))];
+  const order = [...current];
+  let moved = 0;
+  for (let i = 0; i < desired.length; i += 1) {
+    if (order[i] === desired[i]) continue;
+    const child = byNumber.get(desired[i]);
+    const anchor = i === 0 ? { before_id: byNumber.get(order[0]).id } : { after_id: byNumber.get(desired[i - 1]).id };
+    const res = api(ctx, ['-X', 'PATCH', `repos/${repo}/issues/${parent}/sub_issues/priority`], { sub_issue_id: child.id, ...anchor });
+    if (!res.ok) return failed(res, `moving #${desired[i]} under #${parent}`);
+    order.splice(order.indexOf(desired[i]), 1);
+    order.splice(i, 0, desired[i]);
+    moved += 1;
+  }
+  return { ok: true, provider: PROVIDER, parent: String(parent), order: desired, moved };
+}
+
+function orderChildrenArgs(args) {
+  const f = flags(args, ['parent', 'ids']);
+  if (!f || !/^\d+$/.test(f.parent || '') || !/^\d+(,\d+)*$/.test(f.ids || '')) return null;
+  const ids = f.ids.split(',');
+  if (new Set(ids).size !== ids.length) return null;
+  return orderChildren({ parent: f.parent, ids });
 }
 
 function listItemsArgs(args) {
@@ -427,6 +487,7 @@ const commands = {
   check: (args) => (args.length ? null : check()),
   'get-item': getItemArgs,
   'list-items': listItemsArgs,
+  'order-children': orderChildrenArgs,
   'save-item': saveItemArgs,
 };
 
@@ -434,4 +495,4 @@ if (require.main === module) {
   process.exitCode = cli(commands, process.argv.slice(2));
 }
 
-module.exports = { name: PROVIDER, commands, actions: ACTIONS, kinds: KIND_LABELS, parseRemote, target, auth, access, check, getItem, listItems, saveItem };
+module.exports = { name: PROVIDER, commands, actions: ACTIONS, kinds: KIND_LABELS, parseRemote, target, auth, access, check, getItem, listItems, orderChildren, saveItem };

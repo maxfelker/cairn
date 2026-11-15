@@ -17,8 +17,9 @@ count:
 
 - **Kinds:** each kind uses the repository's issue type of the same name
   (`Feature`, `Task`, `Bug`, and `Epic` where an organization defines one).
-  Where no type exists, the kind label is used instead (`epic`, for example).
-  Labels are only a fallback.
+  Every item also gets the kind label (`feature`, `task`) as a backup. Where
+  no type exists, as with `epic` in most repositories, the label alone
+  marks the kind.
 - **References:** refer to an item as `#<id>` (for example `- [ ] #12`).
   GitHub expands these into the item's title and status.
 - **Children** are native sub-issues.
@@ -35,6 +36,7 @@ Run each one as `node "${CLAUDE_SKILL_DIR}/providers/github.js" <command>`.
 | `check` | all three | For the setup check |
 | `get-item --id <n>` | `gh api` issue, comments, and sub-issues | |
 | `list-items --kind <kind>` | `gh api` issues by type or label | |
+| `order-children --parent <n> --ids <n,n>` | `gh api` sub-issue reprioritize | Moves only what is out of place |
 | `save-item --kind <kind> --file - [--parent <n>]` | `gh api` create or update, and sub-issue link | |
 
 How contract actions map to GitHub repository roles:
