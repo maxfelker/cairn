@@ -178,3 +178,54 @@ epic").
 5. **Reply briefly.** Give the link, whether the epic was created or
    updated, and its acceptance criteria in one line each. Suggest breaking
    it into features as the next step.
+
+### Break an epic into features
+
+Use this when the user asks to break down, decompose, or plan the features
+of an epic ("break down epic #1"). Features are a capabilities backlog: each
+one is a single observable capability, written from the point of view of
+whoever experiences it.
+
+1. **Read the epic.** Run `get-item --id <epic>`. Take its body and comments
+   into account (comments often carry clarifications). Note its existing
+   children. A capability already covered by an open child keeps that
+   child's exact title, so saving updates it instead of duplicating it.
+2. **Plan the features.**
+   - **One capability per feature.** The title reads
+     `A <persona> can <do or perceive one specific thing>`, including the
+     input or trigger when it is part of the capability ("A player can move
+     the camera with WASD"). If a title needs an "and" or an "or", or names
+     a system instead of an action, split it.
+   - **A persona is someone or something that directly experiences the
+     capability:** a customer, a player, an enemy AI, or a surface they
+     perceive. A developer is not a persona. Never create a
+     "A developer can …" feature.
+   - **Describe behavior, not architecture.** Say what the persona can do
+     or perceive, and how they would see it working. Classes, files, and
+     components belong in tasks.
+   - **Reframe system concerns as something a persona experiences.**
+     Instead of a "HUD system", write "A player can see their food count on
+     the HUD".
+   - **No substrate features.** Work no persona directly experiences
+     (setup, plumbing, base components) is not a feature. Order the
+     features, then put that work as the earliest tasks of the first
+     feature that needs it.
+3. **Draft each feature**: `# <title>`; a short prose paragraph restating
+   the capability in plain language; `## Expected behavior`, describing
+   what the persona sees when it works; and `## Acceptance Criteria`,
+   listing the tasks needed to deliver it, with any substrate tasks first.
+   Pipe each draft to `structure.js feature -`, and fix every problem.
+4. **Save each feature.** Pipe it to
+   `save-item --kind feature --parent <epic> --file -`. This creates and
+   links a new feature, or updates the existing one with that title.
+5. **Update the epic.** Replace the items in the epic's Acceptance Criteria
+   with one reference per feature, written the way the provider reference
+   says to reference an item. Keep the rest of the epic exactly as it is,
+   including its title. Check it with `structure.js epic -`. If the epic
+   was already missing sections before your change, don't rewrite it: save
+   only the criteria change, and mention the gap. Save it with
+   `save-item --kind epic`.
+6. **Reply briefly.** List the features as references, marking each as new
+   or already existing, and note any substrate assigned to an early
+   feature. Suggest breaking a feature into tasks as the next step.
+
