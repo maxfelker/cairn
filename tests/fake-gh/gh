@@ -9,6 +9,7 @@
 //     labels: [{name, color, description}],
 //     issues: [{number, id, title, body, state: "OPEN"|"CLOSED", labels: [name],
 //               type: name|null, parent: number|null, comments: [{author, body}]}],
+//     pulls: [{number, state: "MERGED"|"OPEN"|"CLOSED", closes: [issue numbers]}],
 //     calls: [[...argv]] }
 //
 // It models only what the adapter uses, with gh's real output and error text.
@@ -188,6 +189,17 @@ if (group === 'api') {
         done('', 1, "gh: Field 'issueTypes' doesn't exist on type 'Repository'\n");
       }
       json({ data: { repository: { issueTypes: { nodes: state.issueTypes.map((name) => ({ name, isEnabled: true })) } } } });
+    }
+    if (/closedByPullRequestsReferences/.test(q)) {
+      requireRepo(`${opts.fields.owner}/${opts.fields.name}`);
+      const n = Number(opts.fields.number);
+      if (!state.issues.some((i) => i.number === n)) {
+        done('', 1, `gh: Could not resolve to an Issue with the number of ${n}.\n`);
+      }
+      const nodes = (state.pulls || [])
+        .filter((p) => p.closes.includes(n))
+        .map((p) => ({ number: p.number, url: `https://github.com/${state.repo}/pull/${p.number}`, state: p.state }));
+      json({ data: { repository: { issue: { closedByPullRequestsReferences: { nodes } } } } });
     }
     unsupported('graphql query');
   }

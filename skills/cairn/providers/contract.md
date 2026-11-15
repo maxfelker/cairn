@@ -27,7 +27,7 @@ contract. A new provider is done when it passes.
 | `access [--for <action>]` | What may the user do on the target? | `permission`, `allowed` (the actions the user may take) |
 | `check` | All of the above, for the setup check | `target`, `auth`, `access` (each a full result) |
 | `comment --on <id> --file <text\|-> [--key <key>]` | Comment on an item as Cairn. With a key, update Cairn's earlier comment with that key instead of adding another | `comment` (`id`, `url`), `created`, `changed` |
-| `get-item --id <id>` | What does this item say, and what is under it? | `item` (`id`, `url`, `title`, `kind`, `state`, `body`, `parent` or null), `comments` (`author`, `body`), `children` (`id`, `title`, `kind`, `state`) |
+| `get-item --id <id>` | What does this item say, and what is under it? | `item` (`id`, `url`, `title`, `kind`, `state`, `body`, `parent` or null), `comments` (`author`, `body`), `children` (`id`, `title`, `kind`, `state`), `changes` (`id`, `url`, `state`: `merged`, `open`, or `closed`): the changes that close it |
 | `list-items --kind <kind>` | Which open items of this kind exist? | `items` (each `id`, `url`, `title`) |
 | `order-children --parent <id> --ids <id,id,…>` | Put these children first, in this order (others keep their order after them) | `order`, `moved` (0 when already in order) |
 | `save-item --kind <kind> --file <draft> [--parent <id>]` | Create a work item, or update the open one of that kind with exactly that title. With a parent, match among its children, and link a new item under it | `created`, `item` (`id`, `url`, `title`), and with a parent: `parent`, `linked` |

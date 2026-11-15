@@ -360,6 +360,7 @@ test('get-item: returns the body, comments, and children with their kinds', () =
   assert.deepEqual(json.item, { id: '1', url: 'https://github.com/octo/repo/issues/1', title: 'Trading', kind: 'epic', state: 'open', body: 'Why…', parent: null });
   assert.equal(gh.run('get-item', '--id', '2').json.item.parent, '1');
   assert.deepEqual(json.comments, [{ author: 'pm', body: 'Include allies?' }, { author: 'octo', body: 'Later.' }]);
+  assert.deepEqual(json.changes, []);
   assert.deepEqual(json.children, [
     { id: '2', title: 'A player can trade food', kind: 'feature', state: 'open' },
     { id: '3', title: 'A player can see caravans', kind: 'feature', state: 'closed' },
@@ -476,4 +477,20 @@ test('comment: READ access can comment; a missing item and bad input change noth
     assert.equal(gh.run('comment', ...args).status, 2, args.join(' '));
   }
   assert.equal(gh.state().issues[0].comments.length, 1);
+});
+
+test('get-item: reports the changes that close an item, merged or not', () => {
+  const gh = fakeGitHub({
+    issues: [{ number: 1, title: 'Feature' }, { number: 2, title: 'Task' }],
+    pulls: [
+      { number: 10, state: 'MERGED', closes: [1, 2] },
+      { number: 11, state: 'OPEN', closes: [1] },
+      { number: 12, state: 'CLOSED', closes: [3] },
+    ],
+  });
+  assert.deepEqual(gh.run('get-item', '--id', '1').json.changes, [
+    { id: '10', url: 'https://github.com/octo/repo/pull/10', state: 'merged' },
+    { id: '11', url: 'https://github.com/octo/repo/pull/11', state: 'open' },
+  ]);
+  assert.deepEqual(gh.run('get-item', '--id', '2').json.changes.map((c) => c.id), ['10']);
 });
