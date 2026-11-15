@@ -270,3 +270,34 @@ capability: concrete engineering steps a person or an agent can pick up.
    new or already existing. Mention any feature you proposed, and suggest
    working on the first task as the next step.
 
+### Finish a feature
+
+Run this right after the last change for a feature merges, and whenever the
+user asks ("close out feature #2", "is feature #2 done?"). The parent epic
+then reads as a running record of shipped capabilities.
+
+1. **Read the feature.** Run `get-item --id <feature>`, then `get-item` on
+   each child, and collect the merged changes from all of them.
+2. **Check that it is complete.** The feature is complete when it is closed,
+   or when every child is closed and at least one change has merged. If it
+   is not complete, list what is still open, and stop without commenting.
+3. **Post the summary on the parent.** Pipe it to
+   `comment --on <parent> --key feature-complete-<feature id> --file -`. The
+   key makes a re-run update the same comment instead of adding a second.
+   Keep it simple and small, in exactly this shape:
+
+   ```
+   **Feature completed: <feature title>** <feature reference>
+
+   <One or two plain-language sentences on the capability it added.>
+
+   **<Items line>:** <feature reference>, <child references, in order>
+   **<Changes line>:** <merged change references>
+   ```
+
+   Write every reference in the provider's short form (see its reference
+   file), never as a Markdown URL link: the provider expands short
+   references into titled, status-aware links. The provider reference
+   also names the two summary lines.
+4. **Reply** with the link to the comment.
+
