@@ -58,6 +58,7 @@ test('save-item: the first save creates the label and the item', () => {
     ok: true,
     provider: 'github',
     kind: 'epic',
+    via: 'label',
     created: true,
     item: { id: '1', url: 'https://github.com/octo/repo/issues/1', title: 'Players can trade between settlements' },
   });
@@ -167,4 +168,185 @@ test('save-item: reads the draft from stdin with --file -', () => {
   const r = spawnSync(process.execPath, [script, 'save-item', '--kind', 'epic', '--file', '-'], { cwd: gh.cwd, env: gh.env, input: EPIC, encoding: 'utf8' });
   assert.equal(r.status, 0, r.stdout);
   assert.equal(gh.state().issues[0].title, 'Players can trade between settlements');
+});
+
+// Issue types: GitHub's native kinds. Labels are the fallback.
+
+const TYPED = { issueTypes: ['Task', 'Bug', 'Feature'] };
+const FEATURE = '# A player can move the camera with WASD\n\nThe camera pans when a player holds W, A, S, or D.\n';
+
+test('types: a feature in a typed repo gets the Feature type and no label', () => {
+  const gh = fakeGitHub(TYPED);
+  const { json } = gh.run('save-item', '--kind', 'feature', '--file', gh.draft('f.md', FEATURE));
+  assert.equal(json.via, 'type');
+  const [issue] = gh.state().issues;
+  assert.equal(issue.type, 'Feature');
+  assert.deepEqual(issue.labels, []);
+  assert.equal(gh.state().labels.length, 0, 'no label created');
+});
+
+test('types: bug and task use their types too', () => {
+  const gh = fakeGitHub(TYPED);
+  gh.run('save-item', '--kind', 'bug', '--file', gh.draft('b.md', '# Camera jitters at the map edge\n\nSteps…\n'));
+  gh.run('save-item', '--kind', 'task', '--file', gh.draft('t.md', '# Add the camera input handler\n\nDo it.\n'));
+  assert.deepEqual(gh.state().issues.map((i) => i.type), ['Bug', 'Task']);
+});
+
+test('types: an epic falls back to a label when there is no Epic type', () => {
+  const gh = fakeGitHub(TYPED);
+  const { json } = gh.run('save-item', '--kind', 'epic', '--file', gh.draft('e.md', EPIC));
+  assert.equal(json.via, 'label');
+  assert.deepEqual(gh.state().issues[0].labels, ['epic']);
+  assert.equal(gh.state().issues[0].type, null);
+});
+
+test('types: an org Epic type is used when it exists', () => {
+  const gh = fakeGitHub({ issueTypes: ['Epic', 'Feature'] });
+  assert.equal(gh.run('save-item', '--kind', 'epic', '--file', gh.draft('e.md', EPIC)).json.via, 'type');
+  assert.equal(gh.state().issues[0].type, 'Epic');
+});
+
+test('types: an untyped repo uses labels for every kind', () => {
+  const gh = fakeGitHub({ issueTypes: [] });
+  const { json } = gh.run('save-item', '--kind', 'feature', '--file', gh.draft('f.md', FEATURE));
+  assert.equal(json.via, 'label');
+  assert.deepEqual(gh.state().issues[0].labels, ['feature']);
+});
+
+test('types: a host without issue types falls back to labels', () => {
+  const gh = fakeGitHub({ issueTypes: null });
+  const { status, json } = gh.run('save-item', '--kind', 'feature', '--file', gh.draft('f.md', FEATURE));
+  assert.equal(status, 0, JSON.stringify(json));
+  assert.equal(json.via, 'label');
+});
+
+test('types: a legacy label-only feature is found, not duplicated', () => {
+  const gh = fakeGitHub({
+    ...TYPED,
+    labels: [{ name: 'feature' }],
+    issues: [{ number: 2, title: 'A player can move the camera with WASD', labels: ['feature'] }],
+  });
+  const { json } = gh.run('save-item', '--kind', 'feature', '--file', gh.draft('f.md', FEATURE));
+  assert.equal(json.created, false);
+  assert.equal(json.item.id, '2');
+  assert.equal(gh.state().issues.length, 1);
+
+  const listed = gh.run('list-items', '--kind', 'feature').json;
+  assert.deepEqual(listed.items.map((i) => i.id), ['2']);
+});
+
+test('types: list-items merges typed and labeled items without repeats', () => {
+  const gh = fakeGitHub({
+    ...TYPED,
+    issues: [
+      { number: 1, title: 'Typed', type: 'Feature' },
+      { number: 2, title: 'Labeled', labels: ['feature'] },
+      { number: 3, title: 'Both', type: 'Feature', labels: ['feature'] },
+      { number: 4, title: 'A task', type: 'Task' },
+    ],
+  });
+  assert.deepEqual(gh.run('list-items', '--kind', 'feature').json.items.map((i) => i.title), ['Typed', 'Labeled', 'Both']);
+});
+
+// Parents: features as native sub-issues of their epic.
+
+const WITH_EPIC = {
+  ...TYPED,
+  labels: [{ name: 'epic' }],
+  issues: [{ number: 1, title: 'Trading between settlements', labels: ['epic'] }],
+};
+
+test('parent: a new feature is created and linked under its epic by database id', () => {
+  const gh = fakeGitHub(WITH_EPIC);
+  const { status, json } = gh.run('save-item', '--kind', 'feature', '--parent', '1', '--file', gh.draft('f.md', FEATURE));
+  assert.equal(status, 0, JSON.stringify(json));
+  assert.equal(json.created, true);
+  assert.equal(json.linked, true);
+  assert.equal(json.parent, '1');
+
+  const feature = gh.state().issues.find((i) => i.number === 2);
+  assert.equal(feature.parent, 1);
+  assert.equal(feature.type, 'Feature');
+  const link = gh.state().calls.find((c) => c.includes('repos/octo/repo/issues/1/sub_issues') && c.includes('POST'));
+  assert.ok(link.includes(`sub_issue_id=${feature.id}`), `links by database id ${feature.id}, not number 2: ${link.join(' ')}`);
+});
+
+test('parent: saving again updates the child with no duplicate and no second link', () => {
+  const gh = fakeGitHub(WITH_EPIC);
+  gh.run('save-item', '--kind', 'feature', '--parent', '1', '--file', gh.draft('a.md', FEATURE));
+  const { json } = gh.run('save-item', '--kind', 'feature', '--parent', '1', '--file', gh.draft('b.md', `${FEATURE}\nMore.\n`));
+  assert.equal(json.created, false);
+  assert.equal(json.linked, false);
+  assert.equal(gh.state().issues.length, 2);
+  assert.match(gh.state().issues[1].body, /More\./);
+  const links = gh.state().calls.filter((c) => c.includes('POST') && c.some((a) => a.endsWith('/sub_issues')));
+  assert.equal(links.length, 1);
+});
+
+test('parent: the same title under a different parent is a separate feature', () => {
+  const gh = fakeGitHub({ ...WITH_EPIC, issues: [...WITH_EPIC.issues, { number: 2, title: 'Another epic', labels: ['epic'] }] });
+  gh.run('save-item', '--kind', 'feature', '--parent', '1', '--file', gh.draft('a.md', FEATURE));
+  const { json } = gh.run('save-item', '--kind', 'feature', '--parent', '2', '--file', gh.draft('b.md', FEATURE));
+  assert.equal(json.created, true);
+  assert.deepEqual(gh.state().issues.filter((i) => i.type === 'Feature').map((i) => i.parent), [1, 2]);
+});
+
+test('parent: an unlinked item left by an interrupted run is linked, not duplicated', () => {
+  const gh = fakeGitHub({ ...WITH_EPIC, issues: [...WITH_EPIC.issues, { number: 2, title: 'A player can move the camera with WASD', type: 'Feature' }] });
+  const { json } = gh.run('save-item', '--kind', 'feature', '--parent', '1', '--file', gh.draft('f.md', FEATURE));
+  assert.equal(json.created, false);
+  assert.equal(json.linked, true);
+  assert.equal(gh.state().issues.find((i) => i.number === 2).parent, 1);
+  assert.equal(gh.state().issues.length, 2);
+});
+
+test('parent: a same-title item under another parent is not stolen', () => {
+  const gh = fakeGitHub({
+    ...WITH_EPIC,
+    issues: [...WITH_EPIC.issues, { number: 2, title: 'Other', labels: ['epic'] }, { number: 3, title: 'A player can move the camera with WASD', type: 'Feature', parent: 2 }],
+  });
+  const { json } = gh.run('save-item', '--kind', 'feature', '--parent', '1', '--file', gh.draft('f.md', FEATURE));
+  assert.equal(json.created, true);
+  assert.equal(gh.state().issues.find((i) => i.number === 3).parent, 2, 'left where it was');
+});
+
+test('parent: TRIAGE is needed to link, and a missing parent changes nothing', () => {
+  const gh = fakeGitHub({ ...WITH_EPIC, permission: 'READ' });
+  assert.equal(gh.run('save-item', '--kind', 'feature', '--parent', '1', '--file', gh.draft('f.md', FEATURE)).json.code, 'MISSING_PERMISSION');
+
+  const missing = fakeGitHub(WITH_EPIC);
+  const { json } = missing.run('save-item', '--kind', 'feature', '--parent', '99', '--file', missing.draft('f.md', FEATURE));
+  assert.equal(json.code, 'TARGET_UNAVAILABLE');
+  assert.equal(missing.state().issues.length, 1);
+  assert.equal(missing.run('save-item', '--kind', 'feature', '--parent', 'abc', '--file', 'x').status, 2);
+});
+
+// get-item: read before planning.
+
+test('get-item: returns the body, comments, and children with their kinds', () => {
+  const gh = fakeGitHub({
+    ...TYPED,
+    issues: [
+      { number: 1, title: 'Trading', body: 'Why…', labels: ['epic'], comments: [{ author: 'pm', body: 'Include allies?' }, { author: 'octo', body: 'Later.' }] },
+      { number: 2, title: 'A player can trade food', type: 'Feature', parent: 1 },
+      { number: 3, title: 'A player can see caravans', labels: ['feature'], parent: 1, state: 'CLOSED' },
+    ],
+  });
+  const { status, json } = gh.run('get-item', '--id', '1');
+  assert.equal(status, 0, JSON.stringify(json));
+  assert.deepEqual(json.item, { id: '1', url: 'https://github.com/octo/repo/issues/1', title: 'Trading', kind: 'epic', state: 'open', body: 'Why…' });
+  assert.deepEqual(json.comments, [{ author: 'pm', body: 'Include allies?' }, { author: 'octo', body: 'Later.' }]);
+  assert.deepEqual(json.children, [
+    { id: '2', title: 'A player can trade food', kind: 'feature', state: 'open' },
+    { id: '3', title: 'A player can see caravans', kind: 'feature', state: 'closed' },
+  ]);
+});
+
+test('get-item: an item with no children, and a missing item', () => {
+  const gh = fakeGitHub({ issues: [{ number: 1, title: 'Loose', type: null }] });
+  const { json } = gh.run('get-item', '--id', '1');
+  assert.deepEqual(json.children, []);
+  assert.equal(json.item.kind, null);
+  assert.equal(gh.run('get-item', '--id', '42').json.code, 'TARGET_UNAVAILABLE');
+  assert.equal(gh.run('get-item', '--id', 'x').status, 2);
 });

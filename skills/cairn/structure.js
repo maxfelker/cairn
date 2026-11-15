@@ -40,6 +40,7 @@ function parse(text) {
   const first = lines.findIndex((l) => l.trim() !== '');
   const titleMatch = first >= 0 ? /^#\s+(.+?)\s*$/.exec(lines[first]) : null;
   const sections = [];
+  const intro = [];
   let current = null;
   for (const line of lines.slice(first + 1)) {
     const h = /^##\s+(.+?)\s*#*\s*$/.exec(line);
@@ -48,25 +49,91 @@ function parse(text) {
       sections.push(current);
     } else if (current) {
       current.lines.push(line);
+    } else {
+      intro.push(line);
     }
   }
-  return { title: titleMatch ? titleMatch[1] : null, sections };
+  return { title: titleMatch ? titleMatch[1] : null, intro, sections };
 }
 
-// Check one acceptance criterion. Returns a problem string, or null.
-function criterionProblem(item) {
-  const m = /^an?\s+(.+?)\s+can\s+(\S.*)$/i.exec(item);
+// A reference to a child item, such as `#12` or `ABC-123`. After an epic is
+// broken down, its criteria become references to its features.
+const ITEM_REF = /^(#\d+|[A-Z][A-Z0-9]+-\d+)$/;
+
+// Check one capability statement: "A <persona> can <capability>". `what`
+// names it in messages. Returns a problem string, or null.
+function capabilityProblem(text, what) {
+  const m = /^an?\s+(.+?)\s+can\s+(\S.*)$/i.exec(text);
   if (!m) {
-    return `Acceptance criterion "${item}" is not a capability. Write it as "A <persona> can <do or perceive something>".`;
+    return `${what} "${text}" is not a capability. Write it as "A <persona> can <do or perceive something>".`;
   }
   const persona = m[1];
   if (NOT_PERSONAS.test(persona)) {
-    return `Acceptance criterion "${item}" uses "${persona}" as the persona. A developer is not a persona: name who experiences the capability, or move this work to a task.`;
+    return `${what} "${text}" uses "${persona}" as the persona. A developer is not a persona: name who experiences the capability, or move this work to a task.`;
   }
   if (SYSTEM_WORDS.test(persona)) {
-    return `Acceptance criterion "${item}" names a system part ("${persona}") as the persona. Name the person or actor who experiences it.`;
+    return `${what} "${text}" names a system part ("${persona}") as the persona. Name the person or actor who experiences it.`;
   }
   return null;
+}
+
+// Check one epic acceptance criterion. Returns a problem string, or null.
+function criterionProblem(item) {
+  if (ITEM_REF.test(item)) return null;
+  return capabilityProblem(item, 'Acceptance criterion');
+}
+
+function listItems(section) {
+  return section.lines
+    .map((l) => /^\s*[-*]\s+(?:\[[ xX]\]\s+)?(.+?)\s*$/.exec(l))
+    .filter(Boolean)
+    .map((m) => m[1]);
+}
+
+const FEATURE_SECTIONS = [
+  { key: 'behavior', label: 'Expected behavior', names: ['expected behavior', 'expected behaviour', 'behavior', 'behaviour'] },
+  { key: 'criteria', label: 'Acceptance Criteria', names: ['acceptance criteria'] },
+];
+
+// A feature is one capability a persona gains. Its title is the capability
+// statement, its body opens with plain prose restating it, and it lists the
+// expected behavior and its acceptance criteria (the tasks that deliver it).
+function checkFeature(text) {
+  const problems = [];
+  const { title, intro, sections } = parse(text);
+
+  if (!title) {
+    problems.push('The draft must start with a "# <title>" line.');
+  } else {
+    const problem = capabilityProblem(title, 'The title');
+    if (problem) problems.push(problem);
+    else if (/\b(and|or)\b/i.test(title.replace(/^an?\s+.+?\s+can\s+/i, ''))) {
+      problems.push(`The title "${title}" has more than one capability ("and" or "or"). Split it into separate features.`);
+    }
+  }
+
+  if (!intro.some((l) => l.trim() !== '' && !/^\s*([-*]|\d+\.)\s/.test(l))) {
+    problems.push('Start the body with plain prose that restates the capability, before any heading.');
+  }
+
+  const found = {};
+  for (const want of FEATURE_SECTIONS) {
+    const section = sections.find((sec) => want.names.includes(sec.name));
+    if (!section) problems.push(`Missing the "${want.label}" section. Add a "## ${want.label}" heading.`);
+    else found[want.key] = section;
+  }
+  if (found.behavior && !found.behavior.lines.some((l) => l.trim() !== '')) {
+    problems.push('The "Expected behavior" section is empty. Describe what the persona sees when it works.');
+  }
+  if (found.criteria) {
+    if (listItems(found.criteria).length === 0) {
+      problems.push('"Acceptance Criteria" has no items. List the tasks that deliver the capability, one per line.');
+    }
+  }
+
+  return problems.length
+    ? { ok: false, kind: 'feature', problems }
+    : { ok: true, kind: 'feature', title };
 }
 
 function checkEpic(text) {
@@ -93,10 +160,7 @@ function checkEpic(text) {
     if (sections[sections.length - 1] !== criteria) {
       problems.push('"Acceptance Criteria" must be the last section.');
     }
-    const items = criteria.lines
-      .map((l) => /^\s*[-*]\s+(?:\[[ xX]\]\s+)?(.+?)\s*$/.exec(l))
-      .filter(Boolean)
-      .map((m) => m[1]);
+    const items = listItems(criteria);
     if (items.length === 0) {
       problems.push('"Acceptance Criteria" has no items. List each capability as "- [ ] A <persona> can …".');
     }
@@ -111,7 +175,7 @@ function checkEpic(text) {
     : { ok: true, kind: 'epic', title };
 }
 
-const CHECKS = { epic: checkEpic };
+const CHECKS = { epic: checkEpic, feature: checkFeature };
 
 function main(argv) {
   const [kind, file, ...rest] = argv;
@@ -135,4 +199,4 @@ if (require.main === module) {
   process.exitCode = main(process.argv.slice(2));
 }
 
-module.exports = { parse, checkEpic, criterionProblem, EPIC_SECTIONS };
+module.exports = { parse, checkEpic, checkFeature, criterionProblem, EPIC_SECTIONS, FEATURE_SECTIONS };

@@ -13,6 +13,16 @@ count:
 - `git@github.com:OWNER/REPO.git`
 - `https://github.com/OWNER/REPO.git`
 
+## Kinds and references
+
+- **Kinds:** each kind uses the repository's issue type of the same name
+  (`Feature`, `Task`, `Bug`, and `Epic` where an organization defines one).
+  Where no type exists, the kind label is used instead (`epic`, for example).
+  Labels are only a fallback.
+- **References:** refer to an item as `#<id>` (for example `- [ ] #12`).
+  GitHub expands these into the item's title and status.
+- **Children** are native sub-issues.
+
 ## Commands
 
 Run each one as `node "${CLAUDE_SKILL_DIR}/providers/github.js" <command>`.
@@ -23,6 +33,9 @@ Run each one as `node "${CLAUDE_SKILL_DIR}/providers/github.js" <command>`.
 | `auth` | `gh auth status --json hosts` | Reports only the login |
 | `access [--for <action>]` | `gh repo view --json viewerPermission,hasIssuesEnabled` | See the role table |
 | `check` | all three | For the setup check |
+| `get-item --id <n>` | `gh api` issue, comments, and sub-issues | |
+| `list-items --kind <kind>` | `gh api` issues by type or label | |
+| `save-item --kind <kind> --file - [--parent <n>]` | `gh api` create or update, and sub-issue link | |
 
 How contract actions map to GitHub repository roles:
 

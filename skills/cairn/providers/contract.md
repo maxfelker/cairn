@@ -26,15 +26,20 @@ contract. A new provider is done when it passes.
 | `auth` | Is the user logged in with the provider's own tool? | `login` |
 | `access [--for <action>]` | What may the user do on the target? | `permission`, `allowed` (the actions the user may take) |
 | `check` | All of the above, for the setup check | `target`, `auth`, `access` (each a full result) |
+| `get-item --id <id>` | What does this item say, and what is under it? | `item` (`id`, `url`, `title`, `kind`, `state`, `body`), `comments` (`author`, `body`), `children` (`id`, `title`, `kind`, `state`) |
 | `list-items --kind <kind>` | Which open items of this kind exist? | `items` (each `id`, `url`, `title`) |
-| `save-item --kind <kind> --file <draft>` | Create a work item, or update the open one of that kind with exactly that title | `created` (true or false), `item` (`id`, `url`, `title`) |
+| `save-item --kind <kind> --file <draft> [--parent <id>]` | Create a work item, or update the open one of that kind with exactly that title. With a parent, match among its children, and link a new item under it | `created`, `item` (`id`, `url`, `title`), and with a parent: `parent`, `linked` |
 
 Add a command here only when a feature first needs it. Then add it to every
 provider.
 
-`save-item` is idempotent. Saving the same draft twice leaves one item. It
-checks access for `create-item` and `label` before it changes anything, and
-creates the kind's label or category if it is missing.
+`save-item` is idempotent. Saving the same draft twice leaves one item,
+linked once. An item left unlinked by an interrupted run is found and linked
+rather than duplicated. It checks access for `create-item` and `label` (plus `link-child` with a
+parent) before it changes anything.
+Providers record the kind natively where they can (an issue type or work
+item type), and fall back to a label or category otherwise. Results report
+which with `via`.
 
 ## Kinds
 
@@ -43,6 +48,7 @@ creates the kind's label or category if it is missing.
 | `epic` | Why the work exists, and what success looks like |
 | `feature` | One capability a persona gains |
 | `task` | One engineering step that delivers a feature |
+| `bug` | Something that does not work as expected |
 
 ## Drafts
 

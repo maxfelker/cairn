@@ -3,13 +3,18 @@
 // set FAKE_GH_STATE to a JSON file. The adapter then runs as usual, but
 // against this file instead of GitHub.
 //
-// The state file holds:
-//   { repo, login, permission, issuesEnabled, labels: [{name, color, description}],
-//     issues: [{number, title, body, labels, state, url}], calls: [[...argv]] }
+// State file:
+//   { repo, login, permission, issuesEnabled,
+//     issueTypes: ["Task", "Bug", "Feature"] | [] | null (null: host has no types),
+//     labels: [{name, color, description}],
+//     issues: [{number, id, title, body, state: "OPEN"|"CLOSED", labels: [name],
+//               type: name|null, parent: number|null, comments: [{author, body}]}],
+//     calls: [[...argv]] }
 //
-// Only the commands the adapter uses are modeled, with gh's real output and
-// error text. Anything else exits 64, so the adapter can't quietly depend on
-// behavior this mock doesn't model.
+// It models only what the adapter uses, with gh's real output and error text.
+// Database ids differ from issue numbers on purpose (id = number + 9000), so
+// using a number where GitHub wants an id fails here as it would for real.
+// Anything else exits 64.
 
 'use strict';
 
@@ -23,38 +28,13 @@ if (!STATE) {
 
 const state = JSON.parse(fs.readFileSync(STATE, 'utf8'));
 state.labels = state.labels || [];
-state.issues = state.issues || [];
+state.issues = (state.issues || []).map((i) => ({
+  id: i.number + 9000, state: 'OPEN', labels: [], type: null, parent: null, comments: [], body: '', ...i,
+}));
+state.issueTypes = state.issueTypes === undefined ? [] : state.issueTypes;
 state.calls = state.calls || [];
 const argv = process.argv.slice(2);
 state.calls.push(argv);
-
-const VALUE_FLAGS = {
-  '-R': 'repo', '--repo': 'repo', '--json': 'json', '-l': 'label', '--label': 'label',
-  '--state': 'state', '-s': 'state', '--search': 'search', '-S': 'search', '-L': 'limit', '--limit': 'limit',
-  '-t': 'title', '--title': 'title', '-F': 'bodyFile', '--body-file': 'bodyFile', '-b': 'body', '--body': 'body',
-  '-c': 'color', '--color': 'color', '-d': 'description', '--description': 'description', '-h': 'hostname', '--hostname': 'hostname',
-};
-const BOOL_FLAGS = { '--force': 'force', '-f': 'force' };
-
-function parse(args) {
-  const out = { _: [], label: [] };
-  for (let i = 0; i < args.length; i += 1) {
-    const a = args[i];
-    if (VALUE_FLAGS[a]) {
-      const key = VALUE_FLAGS[a];
-      const v = args[++i];
-      if (key === 'label') out.label.push(...v.split(','));
-      else out[key] = v;
-    } else if (BOOL_FLAGS[a]) {
-      out[BOOL_FLAGS[a]] = true;
-    } else if (a.startsWith('-')) {
-      unsupported(`flag ${a}`);
-    } else {
-      out._.push(a);
-    }
-  }
-  return out;
-}
 
 function save() {
   fs.writeFileSync(STATE, JSON.stringify(state, null, 2));
@@ -71,8 +51,13 @@ function unsupported(what) {
   done('', 64, `fake gh: unsupported ${what}: gh ${argv.join(' ')}\n`);
 }
 
-function pick(obj, fields) {
-  return Object.fromEntries(fields.split(',').map((f) => [f, obj[f]]));
+function json(value) {
+  done(`${JSON.stringify(value)}\n`);
+}
+
+// gh api prints the error body to stdout and a summary to stderr.
+function httpError(status, message) {
+  done(`${JSON.stringify({ message, status: String(status) })}\n`, 1, `gh: ${message} (HTTP ${status})\n`);
 }
 
 const RANKS = ['READ', 'TRIAGE', 'WRITE', 'MAINTAIN', 'ADMIN'];
@@ -90,44 +75,79 @@ function requireRepo(repo) {
   }
 }
 
-function issueView(issue) {
+function rest(issue) {
   return {
+    id: issue.id,
     number: issue.number,
     title: issue.title,
     body: issue.body,
-    url: issue.url,
-    state: issue.state,
+    state: issue.state.toLowerCase(),
+    html_url: `https://github.com/${state.repo}/issues/${issue.number}`,
     labels: issue.labels.map((name) => ({ name })),
+    type: issue.type ? { name: issue.type } : null,
   };
 }
 
-function readBody(opts) {
-  if (opts.bodyFile) return fs.readFileSync(opts.bodyFile === '-' ? 0 : opts.bodyFile, 'utf8');
-  return opts.body || '';
+function findIssue(number) {
+  const issue = state.issues.find((i) => i.number === Number(number));
+  if (!issue) httpError(404, 'Not Found');
+  return issue;
 }
 
-const [group, cmd, ...rest] = argv;
-const opts = parse(rest);
+function readInput() {
+  return JSON.parse(fs.readFileSync(0, 'utf8'));
+}
+
+// Simple flag parsers for the two command groups.
+function parseGhFlags(args) {
+  const out = { _: [] };
+  const value = { '-R': 'repo', '--repo': 'repo', '--json': 'json', '-c': 'color', '--color': 'color', '-d': 'description', '--description': 'description', '-h': 'hostname', '--hostname': 'hostname' };
+  for (let i = 0; i < args.length; i += 1) {
+    if (value[args[i]]) out[value[args[i]]] = args[++i];
+    else if (args[i] === '--force' || args[i] === '-f') out.force = true;
+    else if (args[i].startsWith('-')) unsupported(`flag ${args[i]}`);
+    else out._.push(args[i]);
+  }
+  return out;
+}
+
+function parseApiFlags(args) {
+  const out = { method: 'GET', fields: {}, path: null };
+  for (let i = 0; i < args.length; i += 1) {
+    const a = args[i];
+    if (a === '-X' || a === '--method') out.method = args[++i];
+    else if (a === '--input') out.input = args[++i];
+    else if (a === '--paginate') out.paginate = true;
+    else if (a === '--slurp') out.slurp = true;
+    else if (a === '-f' || a === '-F' || a === '--raw-field' || a === '--field') {
+      const [k, ...v] = args[++i].split('=');
+      out.fields[k] = a === '-F' && /^\d+$/.test(v.join('=')) ? Number(v.join('=')) : v.join('=');
+    } else if (a.startsWith('-')) unsupported(`api flag ${a}`);
+    else if (out.path === null) out.path = a;
+    else unsupported(`extra argument ${a}`);
+  }
+  return out;
+}
+
+const [group, cmd, ...rest_] = argv;
 
 if (group === 'auth' && cmd === 'status') {
   const hosts = state.login
     ? { 'github.com': [{ state: 'success', active: true, host: 'github.com', login: state.login, tokenSource: 'fake', scopes: 'repo' }] }
     : {};
-  done(`${JSON.stringify({ hosts })}\n`);
+  json({ hosts });
 }
 
 if (group === 'repo' && cmd === 'view') {
+  const opts = parseGhFlags(rest_);
   requireLogin();
   requireRepo(opts._[0]);
-  const view = {
-    nameWithOwner: state.repo,
-    viewerPermission: state.permission,
-    hasIssuesEnabled: state.issuesEnabled !== false,
-  };
-  done(`${JSON.stringify(pick(view, opts.json))}\n`);
+  const view = { nameWithOwner: state.repo, viewerPermission: state.permission, hasIssuesEnabled: state.issuesEnabled !== false };
+  json(Object.fromEntries(opts.json.split(',').map((f) => [f, view[f]])));
 }
 
 if (group === 'label' && cmd === 'create') {
+  const opts = parseGhFlags(rest_);
   requireLogin();
   requireRepo(opts.repo);
   if (!atLeast('TRIAGE')) done('', 1, 'HTTP 403: Must have triage access to create labels\n');
@@ -142,49 +162,97 @@ if (group === 'label' && cmd === 'create') {
   done(`✓ Label "${name}" created in ${state.repo}\n`);
 }
 
-if (group === 'issue' && cmd === 'list') {
+if (group === 'api') {
+  const opts = parseApiFlags(argv.slice(1));
   requireLogin();
-  requireRepo(opts.repo);
-  const phrase = (/"([^"]+)"/.exec(opts.search || '') || [])[1];
-  const wantState = (opts.state || 'open').toUpperCase();
-  const found = state.issues
-    .filter((i) => wantState === 'ALL' || i.state === wantState)
-    .filter((i) => opts.label.every((l) => i.labels.includes(l)))
-    .filter((i) => !phrase || i.title.toLowerCase().includes(phrase.toLowerCase()))
-    .slice(0, Number(opts.limit || 30))
-    .map((i) => pick(issueView(i), opts.json));
-  done(`${JSON.stringify(found)}\n`);
-}
 
-if (group === 'issue' && cmd === 'create') {
-  requireLogin();
-  requireRepo(opts.repo);
-  if (state.issuesEnabled === false) done('', 1, `the '${state.repo}' repository has disabled issues\n`);
-  for (const l of opts.label) {
-    if (!state.labels.some((x) => x.name === l)) done('', 1, `could not add label: '${l}' not found\n`);
+  if (opts.path === 'graphql') {
+    const q = opts.fields.query || '';
+    if (/issueTypes/.test(q)) {
+      requireRepo(`${opts.fields.owner}/${opts.fields.name}`);
+      if (state.issueTypes === null) {
+        done('', 1, "gh: Field 'issueTypes' doesn't exist on type 'Repository'\n");
+      }
+      json({ data: { repository: { issueTypes: { nodes: state.issueTypes.map((name) => ({ name, isEnabled: true })) } } } });
+    }
+    unsupported('graphql query');
   }
-  if (opts.label.length && !atLeast('TRIAGE')) done('', 1, 'HTTP 403: Must have triage access to add labels\n');
-  const number = state.issues.reduce((n, i) => Math.max(n, i.number), 0) + 1;
-  const issue = {
-    number,
-    title: opts.title,
-    body: readBody(opts),
-    labels: opts.label,
-    state: 'OPEN',
-    url: `https://github.com/${state.repo}/issues/${number}`,
-  };
-  state.issues.push(issue);
-  done(`${issue.url}\n`);
-}
 
-if (group === 'issue' && cmd === 'edit') {
-  requireLogin();
-  requireRepo(opts.repo);
-  const issue = state.issues.find((i) => i.number === Number(opts._[0]));
-  if (!issue) done('', 1, `GraphQL: Could not resolve to an issue or pull request with the number of ${opts._[0]}. (repository.issue)\n`);
-  if (opts.title) issue.title = opts.title;
-  if (opts.bodyFile || opts.body !== undefined) issue.body = readBody(opts);
-  done(`${issue.url}\n`);
+  const [pathPart, queryPart = ''] = opts.path.split('?');
+  const query = Object.fromEntries(new URLSearchParams(queryPart));
+  const m = /^repos\/([^/]+\/[^/]+)\/issues(?:\/(\d+))?(?:\/(comments|sub_issues|parent))?$/.exec(pathPart);
+  if (!m) unsupported(`api path ${opts.path}`);
+  const [, repo, number, sub] = m;
+  requireRepo(repo);
+  const page = (items) => json(opts.paginate && opts.slurp ? [items] : items);
+
+  if (!number && opts.method === 'GET') {
+    const wantState = (query.state || 'open').toUpperCase();
+    const labels = query.labels ? query.labels.split(',') : [];
+    const items = state.issues
+      .filter((i) => wantState === 'ALL' || i.state === wantState)
+      .filter((i) => labels.every((l) => i.labels.includes(l)))
+      .filter((i) => !query.type || (query.type === '*' ? i.type : query.type === 'none' ? !i.type : i.type === query.type))
+      .sort((a, b) => b.number - a.number)
+      .map(rest);
+    page(items);
+  }
+
+  if (!number && opts.method === 'POST') {
+    const body = readInput();
+    if (state.issuesEnabled === false) httpError(410, 'Issues are disabled for this repo');
+    if ((body.type || body.labels) && !atLeast('TRIAGE')) httpError(403, 'Must have triage access to set labels or types');
+    if (body.type && !(state.issueTypes || []).includes(body.type)) {
+      httpError(422, `Validation Failed: '${body.type}' is not a valid issue type for this repository`);
+    }
+    for (const l of body.labels || []) {
+      if (!state.labels.some((x) => x.name === l)) httpError(422, `Validation Failed: label '${l}' does not exist`);
+    }
+    const n = state.issues.reduce((max, i) => Math.max(max, i.number), 0) + 1;
+    const issue = {
+      number: n, id: n + 9000, title: body.title, body: body.body || '', state: 'OPEN',
+      labels: body.labels || [], type: body.type || null, parent: null, comments: [],
+    };
+    state.issues.push(issue);
+    json(rest(issue));
+  }
+
+  if (number && !sub && opts.method === 'GET') json(rest(findIssue(number)));
+
+  if (number && !sub && opts.method === 'PATCH') {
+    const issue = findIssue(number);
+    const body = readInput();
+    for (const k of ['title', 'body', 'type']) if (k in body) issue[k] = body[k];
+    json(rest(issue));
+  }
+
+  if (number && sub === 'comments' && opts.method === 'GET') {
+    page(findIssue(number).comments.map((c, i) => ({ id: i + 1, body: c.body, user: { login: c.author } })));
+  }
+
+  if (number && sub === 'parent' && opts.method === 'GET') {
+    const child = findIssue(number);
+    if (!child.parent) httpError(404, 'No parent issue found');
+    json(rest(findIssue(child.parent)));
+  }
+
+  if (number && sub === 'sub_issues' && opts.method === 'GET') {
+    const parent = findIssue(number);
+    page(state.issues.filter((i) => i.parent === parent.number).map(rest));
+  }
+
+  if (number && sub === 'sub_issues' && opts.method === 'POST') {
+    if (!atLeast('TRIAGE')) httpError(403, 'Must have triage access to add sub-issues');
+    const parent = findIssue(number);
+    const child = state.issues.find((i) => i.id === opts.fields.sub_issue_id);
+    if (!child) httpError(422, 'Validation Failed: sub_issue_id does not match an issue in this repository');
+    if (child.parent === parent.number) httpError(422, 'Validation Failed: Issue may not contain duplicate sub-issues');
+    if (child.parent) httpError(422, 'Validation Failed: Issue may only have one parent');
+    child.parent = parent.number;
+    json(rest(parent));
+  }
+
+  unsupported(`api ${opts.method} ${opts.path}`);
 }
 
 unsupported('command');
