@@ -269,8 +269,46 @@ function listItems({ exec = run, cwd, kind } = {}) {
   return { ok: true, provider: PROVIDER, kind, via: spec.via, items: res.data.map(toItem) };
 }
 
+function isKind(issue, spec) {
+  return (spec.via === 'type' && issue.type && issue.type.name === spec.type)
+    || issue.labels.some((l) => (typeof l === 'string' ? l : l.name) === spec.label);
+}
+
+const sameTitle = (a, b) => a.trim() === b.trim();
+
+// Find the existing item to update. With a parent, look among the parent's
+// open children of this kind. Then look for an orphan of this kind with
+// the same title and no parent, such as one left by a run that stopped
+// before linking.
+function findExisting(ctx, repo, spec, title, parent) {
+  if (parent) {
+    const kids = apiList(ctx, `repos/${repo}/issues/${parent}/sub_issues?per_page=100`);
+    if (!kids.ok) return kids;
+    const child = kids.data.find((i) => i.state === 'open' && isKind(i, spec) && sameTitle(i.title, title));
+    if (child) return { ok: true, issue: child, linked: true };
+  }
+  const open = openOfKind(ctx, repo, spec);
+  if (!open.ok) return open;
+  for (const issue of open.data.filter((i) => sameTitle(i.title, title))) {
+    if (!parent) return { ok: true, issue, linked: false };
+    const p = api(ctx, [`repos/${repo}/issues/${issue.number}/parent`]);
+    if (!p.ok && p.r && /404|Not Found/.test(p.r.stderr)) return { ok: true, issue, linked: false };
+  }
+  return { ok: true, issue: null, linked: false };
+}
+
+// Link a child under a parent. GitHub's sub_issue_id is the child's
+// database id, not its issue number. An existing link counts as success.
+function linkChild(ctx, repo, parent, child) {
+  const res = api(ctx, ['-X', 'POST', `repos/${repo}/issues/${parent}/sub_issues`, '-F', `sub_issue_id=${child.id}`]);
+  if (res.ok || (res.r && /duplicate sub-issues/.test(res.r.stderr))) return { ok: true };
+  return failed(res, `linking #${child.number} under #${parent}`);
+}
+
 // Create a work item, or update the open one of the same kind and title.
-function saveItem({ exec = run, cwd, kind, file } = {}) {
+// With `parent`, the item is a child of that item: duplicates are matched
+// among its children, and a new item is linked under it.
+function saveItem({ exec = run, cwd, kind, file, parent } = {}) {
   const draft = readDraft(file);
   if (!draft.ok) return draft;
 
@@ -279,9 +317,17 @@ function saveItem({ exec = run, cwd, kind, file } = {}) {
   const repo = t.target;
   const ctx = { exec, cwd };
 
-  for (const action of ['create-item', 'label']) {
+  for (const action of parent ? ['create-item', 'label', 'link-child'] : ['create-item', 'label']) {
     const a = access({ exec, cwd, repo, action });
     if (!a.ok) return a;
+  }
+
+  if (parent) {
+    const p = api(ctx, [`repos/${repo}/issues/${parent}`]);
+    if (!p.ok) {
+      if (p.result) return p.result;
+      return fail('TARGET_UNAVAILABLE', `Parent #${parent} was not found in ${repo}.`, 'Check the parent item number.');
+    }
   }
 
   const spec = kindSpec(kind, issueTypes(ctx, repo));
@@ -290,9 +336,9 @@ function saveItem({ exec = run, cwd, kind, file } = {}) {
     if (!label.ok) return label;
   }
 
-  const open = openOfKind(ctx, repo, spec);
-  if (!open.ok) return failed(open, `listing ${kind} issues`);
-  const existing = open.data.find((i) => i.title.trim() === draft.title.trim());
+  const found = findExisting(ctx, repo, spec, draft.title, parent);
+  if (!found.ok) return failed(found, `listing ${kind} issues`);
+  const existing = found.issue;
 
   const res = existing
     ? api(ctx, ['-X', 'PATCH', `repos/${repo}/issues/${existing.number}`], { body: draft.body })
@@ -303,7 +349,14 @@ function saveItem({ exec = run, cwd, kind, file } = {}) {
     });
   if (!res.ok) return failed(res, existing ? `updating #${existing.number}` : `creating the ${kind}`);
 
-  return { ok: true, provider: PROVIDER, kind, via: spec.via, created: !existing, item: toItem(res.data) };
+  const result = { ok: true, provider: PROVIDER, kind, via: spec.via, created: !existing, item: toItem(res.data) };
+  if (parent) {
+    const link = found.linked ? { ok: true } : linkChild(ctx, repo, parent, res.data);
+    if (!link.ok) return link;
+    result.parent = String(parent);
+    result.linked = !found.linked;
+  }
+  return result;
 }
 
 function listItemsArgs(args) {
@@ -313,9 +366,10 @@ function listItemsArgs(args) {
 }
 
 function saveItemArgs(args) {
-  const f = flags(args, ['kind', 'file']);
+  const f = flags(args, ['kind', 'file', 'parent']);
   if (!f || !f.kind || !f.file || !KINDS.includes(f.kind)) return null;
-  return saveItem({ kind: f.kind, file: f.file });
+  if (f.parent !== undefined && !/^\d+$/.test(f.parent)) return null;
+  return saveItem({ kind: f.kind, file: f.file, parent: f.parent });
 }
 
 function accessArgs(args) {

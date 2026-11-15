@@ -180,7 +180,7 @@ if (group === 'api') {
 
   const [pathPart, queryPart = ''] = opts.path.split('?');
   const query = Object.fromEntries(new URLSearchParams(queryPart));
-  const m = /^repos\/([^/]+\/[^/]+)\/issues(?:\/(\d+))?(?:\/(comments|sub_issues))?$/.exec(pathPart);
+  const m = /^repos\/([^/]+\/[^/]+)\/issues(?:\/(\d+))?(?:\/(comments|sub_issues|parent))?$/.exec(pathPart);
   if (!m) unsupported(`api path ${opts.path}`);
   const [, repo, number, sub] = m;
   requireRepo(repo);
@@ -228,6 +228,12 @@ if (group === 'api') {
 
   if (number && sub === 'comments' && opts.method === 'GET') {
     page(findIssue(number).comments.map((c, i) => ({ id: i + 1, body: c.body, user: { login: c.author } })));
+  }
+
+  if (number && sub === 'parent' && opts.method === 'GET') {
+    const child = findIssue(number);
+    if (!child.parent) httpError(404, 'No parent issue found');
+    json(rest(findIssue(child.parent)));
   }
 
   if (number && sub === 'sub_issues' && opts.method === 'GET') {

@@ -247,3 +247,76 @@ test('types: list-items merges typed and labeled items without repeats', () => {
   });
   assert.deepEqual(gh.run('list-items', '--kind', 'feature').json.items.map((i) => i.title), ['Typed', 'Labeled', 'Both']);
 });
+
+// Parents: features as native sub-issues of their epic.
+
+const WITH_EPIC = {
+  ...TYPED,
+  labels: [{ name: 'epic' }],
+  issues: [{ number: 1, title: 'Trading between settlements', labels: ['epic'] }],
+};
+
+test('parent: a new feature is created and linked under its epic by database id', () => {
+  const gh = fakeGitHub(WITH_EPIC);
+  const { status, json } = gh.run('save-item', '--kind', 'feature', '--parent', '1', '--file', gh.draft('f.md', FEATURE));
+  assert.equal(status, 0, JSON.stringify(json));
+  assert.equal(json.created, true);
+  assert.equal(json.linked, true);
+  assert.equal(json.parent, '1');
+
+  const feature = gh.state().issues.find((i) => i.number === 2);
+  assert.equal(feature.parent, 1);
+  assert.equal(feature.type, 'Feature');
+  const link = gh.state().calls.find((c) => c.includes('repos/octo/repo/issues/1/sub_issues') && c.includes('POST'));
+  assert.ok(link.includes(`sub_issue_id=${feature.id}`), `links by database id ${feature.id}, not number 2: ${link.join(' ')}`);
+});
+
+test('parent: saving again updates the child with no duplicate and no second link', () => {
+  const gh = fakeGitHub(WITH_EPIC);
+  gh.run('save-item', '--kind', 'feature', '--parent', '1', '--file', gh.draft('a.md', FEATURE));
+  const { json } = gh.run('save-item', '--kind', 'feature', '--parent', '1', '--file', gh.draft('b.md', `${FEATURE}\nMore.\n`));
+  assert.equal(json.created, false);
+  assert.equal(json.linked, false);
+  assert.equal(gh.state().issues.length, 2);
+  assert.match(gh.state().issues[1].body, /More\./);
+  const links = gh.state().calls.filter((c) => c.includes('POST') && c.some((a) => a.endsWith('/sub_issues')));
+  assert.equal(links.length, 1);
+});
+
+test('parent: the same title under a different parent is a separate feature', () => {
+  const gh = fakeGitHub({ ...WITH_EPIC, issues: [...WITH_EPIC.issues, { number: 2, title: 'Another epic', labels: ['epic'] }] });
+  gh.run('save-item', '--kind', 'feature', '--parent', '1', '--file', gh.draft('a.md', FEATURE));
+  const { json } = gh.run('save-item', '--kind', 'feature', '--parent', '2', '--file', gh.draft('b.md', FEATURE));
+  assert.equal(json.created, true);
+  assert.deepEqual(gh.state().issues.filter((i) => i.type === 'Feature').map((i) => i.parent), [1, 2]);
+});
+
+test('parent: an unlinked item left by an interrupted run is linked, not duplicated', () => {
+  const gh = fakeGitHub({ ...WITH_EPIC, issues: [...WITH_EPIC.issues, { number: 2, title: 'A player can move the camera with WASD', type: 'Feature' }] });
+  const { json } = gh.run('save-item', '--kind', 'feature', '--parent', '1', '--file', gh.draft('f.md', FEATURE));
+  assert.equal(json.created, false);
+  assert.equal(json.linked, true);
+  assert.equal(gh.state().issues.find((i) => i.number === 2).parent, 1);
+  assert.equal(gh.state().issues.length, 2);
+});
+
+test('parent: a same-title item under another parent is not stolen', () => {
+  const gh = fakeGitHub({
+    ...WITH_EPIC,
+    issues: [...WITH_EPIC.issues, { number: 2, title: 'Other', labels: ['epic'] }, { number: 3, title: 'A player can move the camera with WASD', type: 'Feature', parent: 2 }],
+  });
+  const { json } = gh.run('save-item', '--kind', 'feature', '--parent', '1', '--file', gh.draft('f.md', FEATURE));
+  assert.equal(json.created, true);
+  assert.equal(gh.state().issues.find((i) => i.number === 3).parent, 2, 'left where it was');
+});
+
+test('parent: TRIAGE is needed to link, and a missing parent changes nothing', () => {
+  const gh = fakeGitHub({ ...WITH_EPIC, permission: 'READ' });
+  assert.equal(gh.run('save-item', '--kind', 'feature', '--parent', '1', '--file', gh.draft('f.md', FEATURE)).json.code, 'MISSING_PERMISSION');
+
+  const missing = fakeGitHub(WITH_EPIC);
+  const { json } = missing.run('save-item', '--kind', 'feature', '--parent', '99', '--file', missing.draft('f.md', FEATURE));
+  assert.equal(json.code, 'TARGET_UNAVAILABLE');
+  assert.equal(missing.state().issues.length, 1);
+  assert.equal(missing.run('save-item', '--kind', 'feature', '--parent', 'abc', '--file', 'x').status, 2);
+});
