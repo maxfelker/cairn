@@ -373,3 +373,60 @@ test('get-item: an item with no children, and a missing item', () => {
   assert.equal(gh.run('get-item', '--id', '42').json.code, 'TARGET_UNAVAILABLE');
   assert.equal(gh.run('get-item', '--id', 'x').status, 2);
 });
+
+// order-children: the children's order is the task order.
+
+function withChildren(numbers) {
+  return {
+    ...TYPED,
+    issues: [{ number: 1, title: 'A player can move the camera', type: 'Feature' }, ...numbers.map((n) => ({ number: n, title: `Task ${n}`, type: 'Task', parent: 1 }))],
+  };
+}
+const childOrder = (gh) => gh.run('get-item', '--id', '1').json.children.map((c) => c.id);
+const priorityCalls = (gh) => gh.state().calls.filter((c) => c.some((a) => a.endsWith('/sub_issues/priority')));
+
+test('order-children: moves a prerequisite ahead of the tasks that depend on it', () => {
+  const gh = fakeGitHub(withChildren([2, 3, 4]));
+  const { status, json } = gh.run('order-children', '--parent', '1', '--ids', '4,2,3');
+  assert.equal(status, 0, JSON.stringify(json));
+  assert.deepEqual(json.order, ['4', '2', '3']);
+  assert.equal(json.moved, 1);
+  assert.deepEqual(childOrder(gh), ['4', '2', '3']);
+});
+
+test('order-children: unlisted children keep their order after the listed ones', () => {
+  const gh = fakeGitHub(withChildren([2, 3, 4, 5]));
+  gh.run('order-children', '--parent', '1', '--ids', '5,3');
+  assert.deepEqual(childOrder(gh), ['5', '3', '2', '4']);
+});
+
+test('order-children: an order that is already right makes no calls', () => {
+  const gh = fakeGitHub(withChildren([2, 3, 4]));
+  const { json } = gh.run('order-children', '--parent', '1', '--ids', '2,3,4');
+  assert.equal(json.moved, 0);
+  assert.equal(priorityCalls(gh).length, 0);
+});
+
+test('order-children: uses database ids, not issue numbers', () => {
+  const gh = fakeGitHub(withChildren([2, 3]));
+  gh.run('order-children', '--parent', '1', '--ids', '3,2');
+  const [call] = priorityCalls(gh);
+  assert.ok(call, 'a reprioritize call was made');
+  assert.deepEqual(childOrder(gh), ['3', '2'], 'the mock only accepts database ids, so this order proves they were used');
+});
+
+test('order-children: a non-child changes nothing, and bad arguments are usage errors', () => {
+  const gh = fakeGitHub(withChildren([2, 3]));
+  const { json } = gh.run('order-children', '--parent', '1', '--ids', '3,9');
+  assert.equal(json.code, 'TARGET_UNAVAILABLE');
+  assert.match(json.message, /#9/);
+  assert.equal(priorityCalls(gh).length, 0);
+  for (const args of [['--parent', '1'], ['--parent', '1', '--ids', '2,,3'], ['--parent', '1', '--ids', '2,2'], ['--parent', 'x', '--ids', '2']]) {
+    assert.equal(gh.run('order-children', ...args).status, 2, args.join(' '));
+  }
+});
+
+test('order-children: needs TRIAGE', () => {
+  const gh = fakeGitHub({ ...withChildren([2, 3]), permission: 'READ' });
+  assert.equal(gh.run('order-children', '--parent', '1', '--ids', '3,2').json.code, 'MISSING_PERMISSION');
+});

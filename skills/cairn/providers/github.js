@@ -411,6 +411,54 @@ function getItemArgs(args) {
   return getItem({ id: f.id });
 }
 
+// Put the listed children first, in that order. Unlisted children keep
+// their relative order after them. Moves only children that are out of
+// place, using GitHub's native reprioritize endpoint with database ids.
+function orderChildren({ exec = run, cwd, parent, ids } = {}) {
+  const t = target({ exec, cwd });
+  if (!t.ok) return t;
+  const repo = t.target;
+  const ctx = { exec, cwd };
+
+  const a = access({ exec, cwd, repo, action: 'link-child' });
+  if (!a.ok) return a;
+
+  const kids = apiList(ctx, `repos/${repo}/issues/${parent}/sub_issues?per_page=100`);
+  if (!kids.ok) {
+    if (kids.result) return kids.result;
+    return fail('TARGET_UNAVAILABLE', `#${parent} was not found in ${repo}.`, 'Check the parent item number.');
+  }
+  const byNumber = new Map(kids.data.map((k) => [String(k.number), k]));
+  const missing = ids.filter((id) => !byNumber.has(id));
+  if (missing.length) {
+    return fail('TARGET_UNAVAILABLE', `Not children of #${parent}: ${missing.map((m) => `#${m}`).join(', ')}.`, `Link them under #${parent} first, or leave them out of the order.`);
+  }
+
+  const current = kids.data.map((k) => String(k.number));
+  const desired = [...ids, ...current.filter((n) => !ids.includes(n))];
+  const order = [...current];
+  let moved = 0;
+  for (let i = 0; i < desired.length; i += 1) {
+    if (order[i] === desired[i]) continue;
+    const child = byNumber.get(desired[i]);
+    const anchor = i === 0 ? { before_id: byNumber.get(order[0]).id } : { after_id: byNumber.get(desired[i - 1]).id };
+    const res = api(ctx, ['-X', 'PATCH', `repos/${repo}/issues/${parent}/sub_issues/priority`], { sub_issue_id: child.id, ...anchor });
+    if (!res.ok) return failed(res, `moving #${desired[i]} under #${parent}`);
+    order.splice(order.indexOf(desired[i]), 1);
+    order.splice(i, 0, desired[i]);
+    moved += 1;
+  }
+  return { ok: true, provider: PROVIDER, parent: String(parent), order: desired, moved };
+}
+
+function orderChildrenArgs(args) {
+  const f = flags(args, ['parent', 'ids']);
+  if (!f || !/^\d+$/.test(f.parent || '') || !/^\d+(,\d+)*$/.test(f.ids || '')) return null;
+  const ids = f.ids.split(',');
+  if (new Set(ids).size !== ids.length) return null;
+  return orderChildren({ parent: f.parent, ids });
+}
+
 function listItemsArgs(args) {
   const f = flags(args, ['kind']);
   if (!f || !KINDS.includes(f.kind)) return null;
@@ -437,6 +485,7 @@ const commands = {
   check: (args) => (args.length ? null : check()),
   'get-item': getItemArgs,
   'list-items': listItemsArgs,
+  'order-children': orderChildrenArgs,
   'save-item': saveItemArgs,
 };
 
@@ -444,4 +493,4 @@ if (require.main === module) {
   process.exitCode = cli(commands, process.argv.slice(2));
 }
 
-module.exports = { name: PROVIDER, commands, actions: ACTIONS, kinds: KIND_LABELS, parseRemote, target, auth, access, check, getItem, listItems, saveItem };
+module.exports = { name: PROVIDER, commands, actions: ACTIONS, kinds: KIND_LABELS, parseRemote, target, auth, access, check, getItem, listItems, orderChildren, saveItem };

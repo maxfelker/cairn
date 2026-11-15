@@ -36,6 +36,7 @@ Run each one as `node "${CLAUDE_SKILL_DIR}/providers/github.js" <command>`.
 | `check` | all three | For the setup check |
 | `get-item --id <n>` | `gh api` issue, comments, and sub-issues | |
 | `list-items --kind <kind>` | `gh api` issues by type or label | |
+| `order-children --parent <n> --ids <n,n>` | `gh api` sub-issue reprioritize | Moves only what is out of place |
 | `save-item --kind <kind> --file - [--parent <n>]` | `gh api` create or update, and sub-issue link | |
 
 How contract actions map to GitHub repository roles:

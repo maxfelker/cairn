@@ -28,6 +28,7 @@ contract. A new provider is done when it passes.
 | `check` | All of the above, for the setup check | `target`, `auth`, `access` (each a full result) |
 | `get-item --id <id>` | What does this item say, and what is under it? | `item` (`id`, `url`, `title`, `kind`, `state`, `body`), `comments` (`author`, `body`), `children` (`id`, `title`, `kind`, `state`) |
 | `list-items --kind <kind>` | Which open items of this kind exist? | `items` (each `id`, `url`, `title`) |
+| `order-children --parent <id> --ids <id,id,…>` | Put these children first, in this order (others keep their order after them) | `order`, `moved` (0 when already in order) |
 | `save-item --kind <kind> --file <draft> [--parent <id>]` | Create a work item, or update the open one of that kind with exactly that title. With a parent, match among its children, and link a new item under it | `created`, `item` (`id`, `url`, `title`), and with a parent: `parent`, `linked` |
 
 Add a command here only when a feature first needs it. Then add it to every
