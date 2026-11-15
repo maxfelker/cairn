@@ -17,8 +17,9 @@ count:
 
 - **Kinds:** each kind uses the repository's issue type of the same name
   (`Feature`, `Task`, `Bug`, and `Epic` where an organization defines one).
-  Where no type exists, the kind label is used instead (`epic`, for example).
-  Labels are only a fallback.
+  Every item also gets the kind label (`feature`, `task`) as a backup. Where
+  no type exists, as with `epic` in most repositories, the label alone
+  marks the kind.
 - **References:** refer to an item as `#<id>` (for example `- [ ] #12`).
   GitHub expands these into the item's title and status.
 - **Children** are native sub-issues.

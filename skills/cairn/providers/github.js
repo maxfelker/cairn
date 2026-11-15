@@ -170,8 +170,9 @@ function check({ exec = run, cwd } = {}) {
   return { ...head, target: t, auth: a, access: acc };
 }
 
-// Fallback labels for repositories without a matching issue type. Colors apply
-// only when Cairn creates the label. An existing label is never changed.
+// Kind labels: the backup on typed items, and the only marker where no type
+// exists. Colors apply only when Cairn creates the label. An existing label is
+// never changed.
 const KIND_LABELS = {
   bug: { color: 'D73A4A', description: 'Something is not working' },
   epic: { color: '3E4B9E', description: 'Why the work exists and what success looks like' },
@@ -217,7 +218,8 @@ function issueTypes(ctx, repo) {
 }
 
 // How a kind is recorded on GitHub: the native issue type with the same name
-// if the repository has one, otherwise a label. Labels are the fallback.
+// if the repository has one, with the kind label as a backup. Without a type,
+// the label alone.
 function kindSpec(kind, types) {
   const type = types.find((t) => t.toLowerCase() === kind);
   return type ? { via: 'type', type, label: kind } : { via: 'label', label: kind };
@@ -330,11 +332,11 @@ function saveItem({ exec = run, cwd, kind, file, parent } = {}) {
     }
   }
 
+  // The type is the kind where one exists. The label is always set too,
+  // as a backup that any tool or filter can read.
   const spec = kindSpec(kind, issueTypes(ctx, repo));
-  if (spec.via === 'label') {
-    const label = ensureLabel({ exec, repo, kind });
-    if (!label.ok) return label;
-  }
+  const label = ensureLabel({ exec, repo, kind });
+  if (!label.ok) return label;
 
   const found = findExisting(ctx, repo, spec, draft.title, parent);
   if (!found.ok) return failed(found, `listing ${kind} issues`);
@@ -345,9 +347,17 @@ function saveItem({ exec = run, cwd, kind, file, parent } = {}) {
     : api(ctx, ['-X', 'POST', `repos/${repo}/issues`], {
       title: draft.title,
       body: draft.body,
-      ...(spec.via === 'type' ? { type: spec.type } : { labels: [spec.label] }),
+      labels: [spec.label],
+      ...(spec.via === 'type' ? { type: spec.type } : {}),
     });
   if (!res.ok) return failed(res, existing ? `updating #${existing.number}` : `creating the ${kind}`);
+
+  // An existing item missing the backup label gets it added. POST adds to
+  // the label set, whereas PATCH with labels would replace it.
+  if (existing && !existing.labels.some((l) => (typeof l === 'string' ? l : l.name) === spec.label)) {
+    const add = api(ctx, ['-X', 'POST', `repos/${repo}/issues/${existing.number}/labels`], { labels: [spec.label] });
+    if (!add.ok) return failed(add, `labeling #${existing.number}`);
+  }
 
   const result = { ok: true, provider: PROVIDER, kind, via: spec.via, created: !existing, item: toItem(res.data) };
   if (parent) {

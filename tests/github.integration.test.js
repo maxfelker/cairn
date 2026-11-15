@@ -175,14 +175,36 @@ test('save-item: reads the draft from stdin with --file -', () => {
 const TYPED = { issueTypes: ['Task', 'Bug', 'Feature'] };
 const FEATURE = '# A player can move the camera with WASD\n\nThe camera pans when a player holds W, A, S, or D.\n';
 
-test('types: a feature in a typed repo gets the Feature type and no label', () => {
+test('types: a feature in a typed repo gets the Feature type and the feature label as backup', () => {
   const gh = fakeGitHub(TYPED);
   const { json } = gh.run('save-item', '--kind', 'feature', '--file', gh.draft('f.md', FEATURE));
   assert.equal(json.via, 'type');
   const [issue] = gh.state().issues;
   assert.equal(issue.type, 'Feature');
-  assert.deepEqual(issue.labels, []);
-  assert.equal(gh.state().labels.length, 0, 'no label created');
+  assert.deepEqual(issue.labels, ['feature']);
+  assert.deepEqual(gh.state().labels.map((l) => l.name), ['feature']);
+});
+
+test('backup label: an update adds a missing kind label and keeps the others', () => {
+  const gh = fakeGitHub({
+    ...TYPED,
+    labels: [{ name: 'priority', color: 'ffffff', description: '' }],
+    issues: [{ number: 1, title: 'A player can move the camera with WASD', type: 'Feature', labels: ['priority'] }],
+  });
+  const { json } = gh.run('save-item', '--kind', 'feature', '--file', gh.draft('f.md', FEATURE));
+  assert.equal(json.created, false);
+  assert.deepEqual(gh.state().issues[0].labels, ['priority', 'feature']);
+});
+
+test('backup label: an item that already has it makes no label call', () => {
+  const gh = fakeGitHub({
+    ...TYPED,
+    labels: [{ name: 'feature', color: '123456', description: 'Ours' }],
+    issues: [{ number: 1, title: 'A player can move the camera with WASD', type: 'Feature', labels: ['feature'] }],
+  });
+  gh.run('save-item', '--kind', 'feature', '--file', gh.draft('f.md', FEATURE));
+  assert.equal(gh.state().calls.filter((c) => c.some((a) => a.endsWith('/labels'))).length, 0);
+  assert.deepEqual(gh.state().labels, [{ name: 'feature', color: '123456', description: 'Ours' }], 'existing label not recolored');
 });
 
 test('types: bug and task use their types too', () => {
@@ -267,6 +289,7 @@ test('parent: a new feature is created and linked under its epic by database id'
   const feature = gh.state().issues.find((i) => i.number === 2);
   assert.equal(feature.parent, 1);
   assert.equal(feature.type, 'Feature');
+  assert.deepEqual(feature.labels, ['feature']);
   const link = gh.state().calls.find((c) => c.includes('repos/octo/repo/issues/1/sub_issues') && c.includes('POST'));
   assert.ok(link.includes(`sub_issue_id=${feature.id}`), `links by database id ${feature.id}, not number 2: ${link.join(' ')}`);
 });
