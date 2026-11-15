@@ -357,7 +357,8 @@ test('get-item: returns the body, comments, and children with their kinds', () =
   });
   const { status, json } = gh.run('get-item', '--id', '1');
   assert.equal(status, 0, JSON.stringify(json));
-  assert.deepEqual(json.item, { id: '1', url: 'https://github.com/octo/repo/issues/1', title: 'Trading', kind: 'epic', state: 'open', body: 'Why…' });
+  assert.deepEqual(json.item, { id: '1', url: 'https://github.com/octo/repo/issues/1', title: 'Trading', kind: 'epic', state: 'open', body: 'Why…', parent: null });
+  assert.equal(gh.run('get-item', '--id', '2').json.item.parent, '1');
   assert.deepEqual(json.comments, [{ author: 'pm', body: 'Include allies?' }, { author: 'octo', body: 'Later.' }]);
   assert.deepEqual(json.children, [
     { id: '2', title: 'A player can trade food', kind: 'feature', state: 'open' },

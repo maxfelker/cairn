@@ -394,12 +394,14 @@ function getItem({ exec = run, cwd, id } = {}) {
   if (!comments.ok) return failed(comments, `reading comments on #${id}`);
   const children = apiList(ctx, `repos/${repo}/issues/${id}/sub_issues?per_page=100`);
   if (!children.ok) return failed(children, `reading sub-issues of #${id}`);
+  const parent = api(ctx, [`repos/${repo}/issues/${id}/parent`]);
+  if (!parent.ok && !(parent.r && /404/.test(parent.r.stderr))) return failed(parent, `reading the parent of #${id}`);
 
   const i = issue.data;
   return {
     ok: true,
     provider: PROVIDER,
-    item: { ...toItem(i), kind: kindOf(i), state: i.state, body: i.body || '' },
+    item: { ...toItem(i), kind: kindOf(i), state: i.state, body: i.body || '', parent: parent.ok ? String(parent.data.number) : null },
     comments: comments.data.map((c) => ({ author: c.user && c.user.login, body: c.body })),
     children: children.data.map((c) => ({ id: String(c.number), title: c.title, kind: kindOf(c), state: c.state })),
   };

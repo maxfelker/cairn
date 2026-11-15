@@ -229,3 +229,44 @@ whoever experiences it.
    or already existing, and note any substrate assigned to an early
    feature. Suggest breaking a feature into tasks as the next step.
 
+### Break a feature into tasks
+
+Use this when the user asks to break down, decompose, or plan the tasks of a
+feature ("break down feature #2"). Tasks are the "how" behind the
+capability: concrete engineering steps a person or an agent can pick up.
+
+1. **Read the feature.** Run `get-item --id <feature>`. Take its body,
+   comments, and existing children into account. A step already covered by
+   an open child keeps that child's exact title, so saving updates it.
+2. **Decide whether to split it.**
+   - If the feature is small enough to implement directly in one focused
+     change, say so and stop. Do not create placeholder or fake tasks.
+   - If you find a new user-facing capability, do not hide it in a task.
+     Propose it as a separate feature (a title in the form
+     `A <persona> can …`), and let the user decide.
+3. **Plan the tasks.** Each task is one concrete engineering step that
+   helps deliver the capability. This is where components, files, and
+   substrate belong, including foundation work this feature is the first to
+   need. Order them so that prerequisites come before the steps that depend
+   on them. Keep them simple and useful: reuse what already exists, prefer
+   native platform features, and take the shortest change that works.
+4. **Draft each task**: `# <action>` (start with a verb: "Add …",
+   "Move …"); a short prose paragraph on what the step does and why;
+   `## Implementation guidance`, with enough to start; `## Validation`, on
+   how to check the work; and `## Done when`, with checklist items. Pipe
+   each draft to `structure.js task -`, and fix every problem.
+5. **Save each task** in order, piping it to
+   `save-item --kind task --parent <feature> --file -`.
+6. **Set the order.** Run `order-children --parent <feature> --ids <ids>`
+   with the task ids in the planned order. It moves only what is out of
+   place.
+7. **Update the feature.** Replace the items in its Acceptance Criteria with
+   one reference per task, in order, written the way the provider reference
+   says to reference an item. Keep the rest of the feature as it is,
+   including its title. Check it with `structure.js feature -`, and save it
+   with `save-item --kind feature`, adding `--parent <parent>` when
+   `get-item` reported one.
+8. **Reply briefly.** List the tasks in order as references, marking each as
+   new or already existing. Mention any feature you proposed, and suggest
+   working on the first task as the next step.
+
