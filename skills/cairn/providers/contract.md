@@ -26,6 +26,7 @@ contract. A new provider is done when it passes.
 | `auth` | Is the user logged in with the provider's own tool? | `login` |
 | `access [--for <action>]` | What may the user do on the target? | `permission`, `allowed` (the actions the user may take) |
 | `check` | All of the above, for the setup check | `target`, `auth`, `access` (each a full result) |
+| `get-item --id <id>` | What does this item say, and what is under it? | `item` (`id`, `url`, `title`, `kind`, `state`, `body`), `comments` (`author`, `body`), `children` (`id`, `title`, `kind`, `state`) |
 | `list-items --kind <kind>` | Which open items of this kind exist? | `items` (each `id`, `url`, `title`) |
 | `save-item --kind <kind> --file <draft> [--parent <id>]` | Create a work item, or update the open one of that kind with exactly that title. With a parent, match among its children, and link a new item under it | `created`, `item` (`id`, `url`, `title`), and with a parent: `parent`, `linked` |
 

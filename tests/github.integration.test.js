@@ -320,3 +320,33 @@ test('parent: TRIAGE is needed to link, and a missing parent changes nothing', (
   assert.equal(missing.state().issues.length, 1);
   assert.equal(missing.run('save-item', '--kind', 'feature', '--parent', 'abc', '--file', 'x').status, 2);
 });
+
+// get-item: read before planning.
+
+test('get-item: returns the body, comments, and children with their kinds', () => {
+  const gh = fakeGitHub({
+    ...TYPED,
+    issues: [
+      { number: 1, title: 'Trading', body: 'Why…', labels: ['epic'], comments: [{ author: 'pm', body: 'Include allies?' }, { author: 'octo', body: 'Later.' }] },
+      { number: 2, title: 'A player can trade food', type: 'Feature', parent: 1 },
+      { number: 3, title: 'A player can see caravans', labels: ['feature'], parent: 1, state: 'CLOSED' },
+    ],
+  });
+  const { status, json } = gh.run('get-item', '--id', '1');
+  assert.equal(status, 0, JSON.stringify(json));
+  assert.deepEqual(json.item, { id: '1', url: 'https://github.com/octo/repo/issues/1', title: 'Trading', kind: 'epic', state: 'open', body: 'Why…' });
+  assert.deepEqual(json.comments, [{ author: 'pm', body: 'Include allies?' }, { author: 'octo', body: 'Later.' }]);
+  assert.deepEqual(json.children, [
+    { id: '2', title: 'A player can trade food', kind: 'feature', state: 'open' },
+    { id: '3', title: 'A player can see caravans', kind: 'feature', state: 'closed' },
+  ]);
+});
+
+test('get-item: an item with no children, and a missing item', () => {
+  const gh = fakeGitHub({ issues: [{ number: 1, title: 'Loose', type: null }] });
+  const { json } = gh.run('get-item', '--id', '1');
+  assert.deepEqual(json.children, []);
+  assert.equal(json.item.kind, null);
+  assert.equal(gh.run('get-item', '--id', '42').json.code, 'TARGET_UNAVAILABLE');
+  assert.equal(gh.run('get-item', '--id', 'x').status, 2);
+});

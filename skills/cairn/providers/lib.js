@@ -24,7 +24,7 @@ const CODES = [
 
 const ACTIONS = ['comment', 'create-item', 'label', 'link-child', 'push', 'propose-change'];
 
-const COMMANDS = ['target', 'auth', 'access', 'check', 'list-items', 'save-item'];
+const COMMANDS = ['target', 'auth', 'access', 'check', 'get-item', 'list-items', 'save-item'];
 
 const KINDS = ['epic', 'feature', 'task', 'bug'];
 

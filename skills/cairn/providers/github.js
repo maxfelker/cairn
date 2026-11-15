@@ -359,6 +359,48 @@ function saveItem({ exec = run, cwd, kind, file, parent } = {}) {
   return result;
 }
 
+// The contract kind of an issue: its type if that names a kind, otherwise
+// a legacy kind label, otherwise null.
+function kindOf(issue) {
+  const type = issue.type && issue.type.name.toLowerCase();
+  if (KINDS.includes(type)) return type;
+  const label = issue.labels.map((l) => (typeof l === 'string' ? l : l.name)).find((l) => KINDS.includes(l));
+  return label || null;
+}
+
+// One item, with its comments and children, for reading before planning.
+function getItem({ exec = run, cwd, id } = {}) {
+  const t = target({ exec, cwd });
+  if (!t.ok) return t;
+  const repo = t.target;
+  const ctx = { exec, cwd };
+
+  const issue = api(ctx, [`repos/${repo}/issues/${id}`]);
+  if (!issue.ok) {
+    if (issue.result) return issue.result;
+    return fail('TARGET_UNAVAILABLE', `#${id} was not found in ${repo}, or your gh account cannot see it.`, 'Check the item number.');
+  }
+  const comments = apiList(ctx, `repos/${repo}/issues/${id}/comments?per_page=100`);
+  if (!comments.ok) return failed(comments, `reading comments on #${id}`);
+  const children = apiList(ctx, `repos/${repo}/issues/${id}/sub_issues?per_page=100`);
+  if (!children.ok) return failed(children, `reading sub-issues of #${id}`);
+
+  const i = issue.data;
+  return {
+    ok: true,
+    provider: PROVIDER,
+    item: { ...toItem(i), kind: kindOf(i), state: i.state, body: i.body || '' },
+    comments: comments.data.map((c) => ({ author: c.user && c.user.login, body: c.body })),
+    children: children.data.map((c) => ({ id: String(c.number), title: c.title, kind: kindOf(c), state: c.state })),
+  };
+}
+
+function getItemArgs(args) {
+  const f = flags(args, ['id']);
+  if (!f || !/^\d+$/.test(f.id || '')) return null;
+  return getItem({ id: f.id });
+}
+
 function listItemsArgs(args) {
   const f = flags(args, ['kind']);
   if (!f || !KINDS.includes(f.kind)) return null;
@@ -383,6 +425,7 @@ const commands = {
   auth: (args) => (args.length ? null : auth()),
   access: accessArgs,
   check: (args) => (args.length ? null : check()),
+  'get-item': getItemArgs,
   'list-items': listItemsArgs,
   'save-item': saveItemArgs,
 };
@@ -391,4 +434,4 @@ if (require.main === module) {
   process.exitCode = cli(commands, process.argv.slice(2));
 }
 
-module.exports = { name: PROVIDER, commands, actions: ACTIONS, kinds: KIND_LABELS, parseRemote, target, auth, access, check, listItems, saveItem };
+module.exports = { name: PROVIDER, commands, actions: ACTIONS, kinds: KIND_LABELS, parseRemote, target, auth, access, check, getItem, listItems, saveItem };
