@@ -93,7 +93,7 @@ test('criteria must be persona capabilities', () => {
   const cases = {
     '- [ ] Trade panel': /is not a capability/,
     '- [ ] Caravan system': /is not a capability/,
-    '- [ ] A developer can add a trade API': /A developer is not a persona/,
+    '- [ ] A developer can add a trade API': /"Who it is for" does not name developers/,
     '- [ ] Developers can configure routes': /is not a capability|not a persona/,
     '- [ ] A trade system can balance prices': /names a system part/,
     '- [ ] A player can': /is not a capability/,
@@ -102,6 +102,17 @@ test('criteria must be persona capabilities', () => {
     const text = GOOD.replace('- [ ] A player can see a caravan travel along the road', line);
     assert.match(problemsFor(text), want, line);
   }
+});
+
+test('a developer is a persona when the epic is for developers', () => {
+  const tool = GOOD
+    .replace('Players who manage more than one settlement.', 'Developers who ship game mods.')
+    .replace('- [ ] A player can see a caravan travel along the road', '- [ ] A developer can publish a mod to the workshop');
+  assert.equal(checkEpic(tool).ok, true);
+  assert.equal(checkEpic(tool.replace('A developer can publish', 'A dev can publish')).ok, true, '"dev" too');
+  const notForThem = GOOD.replace('- [ ] A player can see a caravan travel along the road', '- [ ] A developer can publish a mod to the workshop');
+  assert.match(problemsFor(notForThem), /"Who it is for" does not name developers/);
+  assert.match(problemsFor(tool.replace('- [ ] A player can open a trade panel between two settlements', '- [ ] A trade system can balance prices')), /names a system part/, 'system parts are still not personas');
 });
 
 test('every problem is reported, not just the first', () => {
@@ -172,7 +183,7 @@ test('feature: a well-formed feature passes', () => {
 test('feature: the title must be one persona capability', () => {
   const cases = {
     'Camera movement': /is not a capability/,
-    'A developer can wire up input': /A developer is not a persona/,
+    'A developer can wire up input': /"Who it is for" does not name developers/,
     'A camera system can pan': /names a system part/,
     'A player can move and zoom the camera': /more than one capability/,
     'A player can pan or rotate the camera': /more than one capability/,
@@ -180,6 +191,24 @@ test('feature: the title must be one persona capability', () => {
   for (const [title, want] of Object.entries(cases)) {
     assert.match(featureProblems(FEATURE.replace('A player can move the camera with WASD', title)), want, title);
   }
+});
+
+test('feature: a developer persona passes when its epic is for developers', () => {
+  const text = FEATURE.replace('A player can move the camera with WASD', 'A developer can preview a mod in the editor');
+  assert.equal(checkFeature(text, { audience: 'Developers who ship game mods.' }).ok, true);
+  assert.equal(checkFeature(text, { audience: 'Players who manage settlements.' }).ok, false);
+  assert.equal(checkFeature(text).ok, false, 'without the audience, a developer persona is not assumed');
+
+  const dir = fs.mkdtempSync(path.join(os.tmpdir(), 'cairn-structure-'));
+  const draft = path.join(dir, 'feature.md');
+  fs.writeFileSync(draft, text);
+  const run = (...args) => spawnSync(process.execPath, [SCRIPT, 'feature', draft, ...args], { encoding: 'utf8' }).status;
+  assert.equal(run('--for', 'Developers who ship game mods.'), 0);
+  assert.equal(run('--for', 'Players.'), 1);
+  assert.equal(run(), 1);
+  assert.equal(run('--for'), 2);
+  assert.equal(run('--who', 'Developers'), 2);
+  assert.equal(spawnSync(process.execPath, [SCRIPT, 'epic', draft, '--for', 'Developers'], { encoding: 'utf8' }).status, 2, 'only features take --for');
 });
 
 test('feature: "and" between personas is one capability, not two', () => {
