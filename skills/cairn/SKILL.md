@@ -4,7 +4,8 @@ description: >
   Delegate software delivery while keeping the shared record in the team's SDLC
   tool (GitHub Issues, pull requests, and releases) instead of local files. Use
   when the user wants to plan an idea, turn it into an epic, break work into
-  features or tasks, work on, pick up, or continue an item by number, link, or
+  features or tasks, design or record an epic's architecture ("how should we
+  build epic #1?"), work on, pick up, or continue an item by number, link, or
   description ("work on #42", "pick up the next task", "work on the camera
   feature"), address issue or review feedback, check whether a pull request is ready, or cut a
   release, and when they ask whether Cairn is set up or ready ("is Cairn set
@@ -19,6 +20,7 @@ allowed-tools:
   - Bash(git remote)
   - Bash(node "${CLAUDE_SKILL_DIR}/structure.js":*)
   - Bash(node "${CLAUDE_SKILL_DIR}/next.js":*)
+  - Bash(node "${CLAUDE_SKILL_DIR}/architecture.js":*)
   - Bash(node "${CLAUDE_SKILL_DIR}/providers/github.js":*)
 ---
 
@@ -238,7 +240,49 @@ whoever experiences it.
    `save-item --kind epic`.
 6. **Reply briefly.** List the features as references, marking each as new
    or already existing, and note any substrate assigned to an early
-   feature. Suggest breaking a feature into tasks as the next step.
+   feature. Suggest recording the epic's architecture as the next step.
+
+### Record an epic's architecture
+
+Use this when the user asks how an epic should be built ("design the
+architecture for epic #1", "how should we build epic #1?"), and for the
+`architect` step. Look at every feature of the epic together, and at the
+code, so shared work, interfaces, and order are decided once, before any
+feature is broken into tasks. The result is one comment on the epic that
+anyone can read and that later steps build on.
+
+1. **Read the epic and its features.** Run `get-item --id <epic>`, then
+   `get-item` on each open feature. Take bodies and comments into account.
+   Closed features are already built: read them only for context.
+2. **Check the current state.** Pipe the epic's `get-item` result to
+   `architecture.js status -`. It says whether an architecture is
+   `missing`, `stale` (and which features it misses or that were renamed),
+   or `current`, and gives the `covers` line for the current features. When
+   updating, start from the existing comment it returns.
+3. **Read the code.** Look at the parts of the repository the features
+   touch: what exists to reuse, where new code belongs, and what several
+   features would otherwise build twice.
+4. **Draft the architecture.** Start with one plain sentence that sums up
+   the approach. Then these sections, short and in plain language:
+   - `## Shared foundation`: work more than one feature needs, and which
+     feature builds it first.
+   - `## Decisions`: each key design choice, with why.
+   - `## Interfaces`: how the features' parts talk to each other.
+   - `## Build order`: the open features in the order to build them, each
+     with what it depends on.
+   - `## Trade-offs`: what was considered and given up.
+   - `## Open questions`: anything unclear, or "None". When features
+     conflict, ask the user instead of choosing silently.
+
+   Refer to items in the provider's short form. Paste the `covers` line
+   from step 2, unchanged, as the last line. Pipe the draft to
+   `architecture.js check -`, and fix every problem.
+5. **Post it.** Pipe the draft to
+   `comment --on <epic> --key architecture --file -`. The key makes a
+   re-run update the same comment instead of adding a second.
+6. **Reply briefly** with the link, the build order in one line, and any
+   open questions. Suggest breaking the first feature in the build order
+   into tasks as the next step.
 
 ### Break a feature into tasks
 
@@ -249,29 +293,39 @@ capability: concrete engineering steps a person or an agent can pick up.
 1. **Read the feature.** Run `get-item --id <feature>`. Take its body,
    comments, and existing children into account. A step already covered by
    an open child keeps that child's exact title, so saving updates it.
-2. **Decide whether to split it.**
+2. **Start from the architecture.** If the feature has a parent epic, run
+   `get-item --id <epic>` and pipe it to `architecture.js status -`.
+   - `missing` or `stale`: say so with its `reason`, offer **Record an
+     epic's architecture**, and stop. Do not create tasks.
+   - `current`: read the architecture comment it returns. Plan the tasks
+     from it: build the shared foundation it assigns to this feature, and
+     do not repeat foundation an earlier feature in the build order owns.
+     Depend on that work instead.
+
+   A feature with no parent epic has no architecture. Plan it on its own.
+3. **Decide whether to split it.**
    - If the feature is small enough to implement directly in one focused
      change, say so and stop. Do not create placeholder or fake tasks.
    - If you find a new user-facing capability, do not hide it in a task.
      Propose it as a separate feature (a title in the form
      `A <persona> can …`), and let the user decide.
-3. **Plan the tasks.** Each task is one concrete engineering step that
+4. **Plan the tasks.** Each task is one concrete engineering step that
    helps deliver the capability. This is where components, files, and
    substrate belong, including foundation work this feature is the first to
    need. Order them so that prerequisites come before the steps that depend
    on them. Keep them simple and useful: reuse what already exists, prefer
    native platform features, and take the shortest change that works.
-4. **Draft each task**: `# <action>` (start with a verb: "Add …",
+5. **Draft each task**: `# <action>` (start with a verb: "Add …",
    "Move …"); a short prose paragraph on what the step does and why;
    `## Implementation guidance`, with enough to start; `## Validation`, on
    how to check the work; and `## Done when`, with checklist items. Pipe
    each draft to `structure.js task -`, and fix every problem.
-5. **Save each task** in order, piping it to
+6. **Save each task** in order, piping it to
    `save-item --kind task --parent <feature> --file -`.
-6. **Set the order.** Run `order-children --parent <feature> --ids <ids>`
+7. **Set the order.** Run `order-children --parent <feature> --ids <ids>`
    with the task ids in the planned order. It moves only what is out of
    place.
-7. **Update the feature.** Replace the items in its Acceptance Criteria with
+8. **Update the feature.** Replace the items in its Acceptance Criteria with
    one reference per task, in order, written the way the provider reference
    says to reference an item. Keep the rest of the feature as it is,
    including its title. Check it with
@@ -279,7 +333,7 @@ capability: concrete engineering steps a person or an agent can pick up.
    epic's `## Who it is for` (read it with `get-item`), and save it with
    `save-item --kind feature`, adding `--parent <parent>` when `get-item`
    reported one.
-8. **Reply briefly.** List the tasks in order as references, marking each as
+9. **Reply briefly.** List the tasks in order as references, marking each as
    new or already existing. Mention any feature you proposed, and suggest
    working on the first task as the next step.
 
@@ -339,6 +393,9 @@ must reach the same step.
    Follow the step it gives. Do not pick a different one. Tell the user the
    step and its `reason` in one line.
 4. **Act on the step.**
+   - `architect`: say the epic has no current architecture, with the
+     `reason`, and offer **Record an epic's architecture**. It posts on the
+     epic, so wait for a yes unless the user already asked for it.
    - `break-down`: say it has no features (or tasks) yet, and offer to
      break it down. Breaking down creates items, so wait for a yes unless
      the user already asked for a breakdown. Then run **Break an epic into

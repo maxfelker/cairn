@@ -6,6 +6,8 @@
 
 const test = require('node:test');
 const assert = require('node:assert/strict');
+const fs = require('node:fs');
+const path = require('node:path');
 
 const { fakeGitHub } = require('./helpers.js');
 
@@ -568,4 +570,37 @@ test('find-item: no match, a missing number, closed items, and bad input', () =>
   assert.equal(gh.run('find-item', '--query', '#42').json.code, 'TARGET_UNAVAILABLE');
   assert.equal(gh.run('find-item').status, 2);
   assert.equal(gh.run('find-item', '--query', '  ').status, 2);
+});
+
+// The architecture comment: posted with its key, read back through get-item.
+
+test('architecture: a keyed comment posted on the epic reads back as current, and stale after a new feature', () => {
+  const { coversLine, status } = require('../skills/cairn/architecture.js');
+  const gh = fakeGitHub({
+    ...TYPED,
+    issues: [
+      { number: 1, title: 'Players can explore the map', labels: ['epic'] },
+      { number: 2, title: 'A player can move the camera with WASD', type: 'Feature', parent: 1 },
+      { number: 3, title: 'A player can zoom the camera', type: 'Feature', parent: 1 },
+    ],
+  });
+  const epic = () => gh.run('get-item', '--id', '1').json;
+  assert.equal(status(epic()).status, 'missing');
+
+  const draft = `One camera rig.\n\n## Shared foundation\n\nThe rig.\n\n## Decisions\n\nOne rig.\n\n## Interfaces\n\nNone.\n\n## Build order\n\n#2, then #3.\n\n## Trade-offs\n\nNone.\n\n## Open questions\n\nNone.\n\n${status(epic()).covers}\n`;
+  const posted = gh.run('comment', '--on', '1', '--key', 'architecture', '--file', gh.draft('arch.md', draft));
+  assert.equal(posted.json.created, true);
+  assert.equal(status(epic()).status, 'current');
+
+  const again = gh.run('comment', '--on', '1', '--key', 'architecture', '--file', gh.draft('arch.md', draft.replace('One rig.', 'One rig, shared.')));
+  assert.equal(again.json.created, false, 're-running updates the same comment');
+  assert.equal(gh.state().issues[0].comments.length, 1);
+
+  const s = gh.state();
+  s.issues.push({ number: 4, id: 9004, title: 'A player can save the map', body: '', state: 'OPEN', labels: [], type: 'Feature', parent: 1, comments: [] });
+  fs.writeFileSync(path.join(gh.root, 'github.json'), JSON.stringify(s));
+  const after = status(epic());
+  assert.equal(after.status, 'stale');
+  assert.deepEqual(after.uncovered.map((f) => f.id), ['4']);
+  assert.equal(coversLine(after.features), after.covers);
 });
