@@ -4,7 +4,7 @@
 
 'use strict';
 
-const { KINDS, run, fail, gitRemote, readDraft, readBody, flags, cli } = require('./lib.js');
+const { KINDS, run, fail, gitRemote, readDraft, readBody, flags, cli, matchItems } = require('./lib.js');
 
 const PROVIDER = 'github';
 const HOST = 'github.com';
@@ -422,6 +422,67 @@ function getItem({ exec = run, cwd, id } = {}) {
   };
 }
 
+// The fields find-item reports for each match.
+function toMatch(issue) {
+  return { id: String(issue.number), title: issue.title, kind: kindOf(issue), state: issue.state, url: issue.html_url };
+}
+
+// Turn what the user said into an item in this repository: a number
+// ("42" or "#42"), an issue URL, or a plain description matched against
+// open issue titles. Reads the open issue listing rather than search,
+// because GitHub's search index lags behind new issues.
+function findItem({ exec = run, cwd, query } = {}) {
+  const t = target({ exec, cwd });
+  if (!t.ok) return t;
+  const repo = t.target;
+  const ctx = { exec, cwd };
+  const text = query.trim();
+  const done = (matches, exact) => ({ ok: true, provider: PROVIDER, query: text, matches, exact });
+
+  let id = (/^#?(\d+)$/.exec(text) || [])[1];
+  if (!id && /^https?:\/\//i.test(text)) {
+    let url;
+    try {
+      url = new URL(text);
+    } catch {
+      url = null;
+    }
+    const parts = url ? url.pathname.replace(/^\/+|\/+$/g, '').split('/') : [];
+    const there = url && url.hostname.toLowerCase() === HOST && parts.length >= 2 ? `${parts[0]}/${parts[1]}` : null;
+    if (!there || there.toLowerCase() !== repo.toLowerCase()) {
+      return fail(
+        'NOT_THIS_PROVIDER',
+        `${text} is not in ${repo}, the repository this clone works on.`,
+        `Give an item in ${repo}, or run Cairn from a clone of the repository that link points to.`,
+      );
+    }
+    if (parts.length !== 4 || parts[2] !== 'issues' || !/^\d+$/.test(parts[3])) {
+      return fail('TARGET_UNAVAILABLE', `${text} is not a link to an issue in ${repo}.`, `Link to an issue, such as https://${HOST}/${repo}/issues/42.`);
+    }
+    id = parts[3];
+  }
+
+  if (id) {
+    const issue = api(ctx, [`repos/${repo}/issues/${id}`]);
+    if (!issue.ok) {
+      if (issue.result) return issue.result;
+      return fail('TARGET_UNAVAILABLE', `#${id} was not found in ${repo}, or your gh account cannot see it.`, 'Check the item number.');
+    }
+    return done([toMatch(issue.data)], true);
+  }
+
+  const open = apiList(ctx, `repos/${repo}/issues?state=open&per_page=100`);
+  if (!open.ok) return failed(open, 'listing open issues');
+  const { matches, exact } = matchItems(text, open.data.filter((i) => !i.pull_request).map(toMatch));
+  return done(matches, exact);
+}
+
+function findItemArgs(args) {
+  const f = flags(args, ['query']);
+  if (!f || !f.query || !f.query.trim()) return null;
+  return findItem({ query: f.query });
+}
+
 function getItemArgs(args) {
   const f = flags(args, ['id']);
   if (!f || !/^\d+$/.test(f.id || '')) return null;
@@ -554,6 +615,7 @@ const commands = {
   access: accessArgs,
   check: (args) => (args.length ? null : check()),
   comment: commentArgs,
+  'find-item': findItemArgs,
   'get-item': getItemArgs,
   'list-items': listItemsArgs,
   'order-children': orderChildrenArgs,
@@ -564,4 +626,4 @@ if (require.main === module) {
   process.exitCode = cli(commands, process.argv.slice(2));
 }
 
-module.exports = { name: PROVIDER, commands, marker, comment, actions: ACTIONS, kinds: KIND_LABELS, parseRemote, target, auth, access, check, getItem, listItems, orderChildren, saveItem };
+module.exports = { name: PROVIDER, commands, marker, comment, actions: ACTIONS, kinds: KIND_LABELS, parseRemote, target, auth, access, check, findItem, getItem, listItems, orderChildren, saveItem };

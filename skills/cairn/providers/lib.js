@@ -24,7 +24,7 @@ const CODES = [
 
 const ACTIONS = ['comment', 'create-item', 'label', 'link-child', 'push', 'propose-change'];
 
-const COMMANDS = ['target', 'auth', 'access', 'check', 'comment', 'get-item', 'list-items', 'order-children', 'save-item'];
+const COMMANDS = ['target', 'auth', 'access', 'check', 'comment', 'find-item', 'get-item', 'list-items', 'order-children', 'save-item'];
 
 const KINDS = ['epic', 'feature', 'task', 'bug'];
 
@@ -102,6 +102,49 @@ function readBody(file) {
   return { ok: true, text: text.replace(/\s+$/, '') };
 }
 
+// Words that say nothing about which item the user means, such as the
+// phrasing around a reference ("pick up the next task on …").
+const FILLER = new Set([
+  'a', 'an', 'the', 'on', 'of', 'for', 'to', 'in', 'into', 'and', 'or', 'with', 'by', 'at', 'from',
+  'can', 'is', 'it', 'this', 'that', 'my', 'our', 'me', 'please', 'next', 'pick', 'up', 'work',
+  'continue', 'start', 'item', 'issue', 'ticket', 'one',
+]);
+
+// Lowercase content words, with a plain plural "s" dropped so "features"
+// matches "feature".
+function words(text) {
+  return String(text).toLowerCase().split(/[^a-z0-9]+/)
+    .filter((w) => w && !FILLER.has(w))
+    .map((w) => (w.length > 3 && w.endsWith('s') && !w.endsWith('ss') ? w.slice(0, -1) : w));
+}
+
+// Match a plain description against items ({id, title, kind, ...}) by the
+// words their titles share with it, best match first. A kind word in the
+// description ("the camera feature") keeps only items of that kind, when
+// any match. `exact` is true when one item matches better than every other,
+// and then it is the only match returned. Otherwise up to `limit`
+// candidates come back, for the user to choose from.
+function matchItems(query, items, limit = 5) {
+  const terms = [...new Set(words(query))];
+  const kinds = terms.filter((w) => KINDS.includes(w));
+  const wanted = terms.filter((w) => !KINDS.includes(w));
+  if (wanted.length === 0) return { matches: [], exact: false };
+
+  let scored = items
+    .map((item) => {
+      const title = new Set(words(item.title));
+      return { item, score: wanted.filter((w) => title.has(w)).length };
+    })
+    .filter((s) => s.score > 0);
+  if (kinds.length && scored.some((s) => kinds.includes(s.item.kind))) {
+    scored = scored.filter((s) => kinds.includes(s.item.kind));
+  }
+  scored.sort((a, b) => b.score - a.score || Number(a.item.id) - Number(b.item.id));
+
+  const exact = scored.length > 0 && (scored.length === 1 || scored[0].score > scored[1].score);
+  return { matches: scored.slice(0, exact ? 1 : limit).map((s) => s.item), exact };
+}
+
 // Parse `--name value` pairs. Returns null on anything unexpected, which the
 // CLI reports as wrong usage.
 function flags(args, names) {
@@ -129,4 +172,4 @@ function cli(commands, argv, { stdout = process.stdout, stderr = process.stderr 
   return result.ok ? 0 : 1;
 }
 
-module.exports = { CODES, ACTIONS, COMMANDS, KINDS, run, fail, gitRemote, readDraft, readBody, flags, cli };
+module.exports = { CODES, ACTIONS, COMMANDS, KINDS, run, fail, gitRemote, readDraft, readBody, flags, cli, words, matchItems };

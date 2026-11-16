@@ -37,6 +37,7 @@ Run each one as `node "${CLAUDE_SKILL_DIR}/providers/github.js" <command>`.
 | `auth` | `gh auth status --json hosts` | Reports only the login |
 | `access [--for <action>]` | `gh repo view --json viewerPermission,hasIssuesEnabled` | See the role table |
 | `check` | all three | For the setup check |
+| `find-item --query <text>` | `gh api` one issue, or the open issue listing | A `github.com/OWNER/REPO/issues/N` link must be this repository |
 | `get-item --id <n>` | `gh api` issue, comments, sub-issues, parent; GraphQL closing PRs | |
 | `comment --on <n> --file - [--key <k>]` | `gh api` issue comments | Adds the hidden Cairn marker |
 | `list-items --kind <kind>` | `gh api` issues by type or label | |

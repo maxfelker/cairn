@@ -494,3 +494,66 @@ test('get-item: reports the changes that close an item, merged or not', () => {
   ]);
   assert.deepEqual(gh.run('get-item', '--id', '2').json.changes.map((c) => c.id), ['10']);
 });
+
+// find-item: what the user said, resolved to an item.
+
+const FIND = {
+  ...TYPED,
+  issues: [
+    { number: 1, title: 'Players can explore the map', labels: ['epic'] },
+    { number: 2, title: 'A player can move the camera with WASD', type: 'Feature', parent: 1 },
+    { number: 3, title: 'A player can zoom the camera', type: 'Feature', parent: 1 },
+    { number: 4, title: 'Add the camera input handler', type: 'Task', parent: 2 },
+    { number: 5, title: 'A player can see the minimap', type: 'Feature', parent: 1, state: 'CLOSED' },
+  ],
+};
+const found = (json) => json.matches.map((m) => m.id);
+
+test('find-item: a number, #number, or same-repo link is one exact match', () => {
+  const gh = fakeGitHub(FIND);
+  for (const query of ['2', '#2', 'https://github.com/octo/repo/issues/2', 'https://github.com/Octo/Repo/issues/2/']) {
+    const { status, json } = gh.run('find-item', '--query', query);
+    assert.equal(status, 0, `${query}: ${JSON.stringify(json)}`);
+    assert.equal(json.exact, true, query);
+    assert.deepEqual(json.matches, [
+      { id: '2', title: 'A player can move the camera with WASD', kind: 'feature', state: 'open', url: 'https://github.com/octo/repo/issues/2' },
+    ], query);
+  }
+});
+
+test('find-item: a closed item referenced by number is still found', () => {
+  const { json } = fakeGitHub(FIND).run('find-item', '--query', '#5');
+  assert.equal(json.exact, true);
+  assert.equal(json.matches[0].state, 'closed');
+});
+
+test('find-item: a link to another repository or host is not this provider', () => {
+  const gh = fakeGitHub(FIND);
+  for (const query of ['https://github.com/other/repo/issues/2', 'https://gitlab.com/octo/repo/-/issues/2']) {
+    const { status, json } = gh.run('find-item', '--query', query);
+    assert.equal(status, 1);
+    assert.equal(json.code, 'NOT_THIS_PROVIDER', query);
+  }
+  assert.equal(gh.run('find-item', '--query', 'https://github.com/octo/repo/pull/7').json.code, 'TARGET_UNAVAILABLE');
+});
+
+test('find-item: a description with one strong match resolves to it', () => {
+  const { json } = fakeGitHub(FIND).run('find-item', '--query', 'the camera feature with WASD');
+  assert.equal(json.exact, true);
+  assert.deepEqual(found(json), ['2']);
+});
+
+test('find-item: an ambiguous description returns the candidates', () => {
+  const { json } = fakeGitHub(FIND).run('find-item', '--query', 'the camera feature');
+  assert.equal(json.exact, false);
+  assert.deepEqual(found(json), ['2', '3']);
+});
+
+test('find-item: no match, a missing number, closed items, and bad input', () => {
+  const gh = fakeGitHub(FIND);
+  assert.deepEqual(gh.run('find-item', '--query', 'inventory').json.matches, []);
+  assert.deepEqual(found(gh.run('find-item', '--query', 'minimap').json), [], 'descriptions match open items only');
+  assert.equal(gh.run('find-item', '--query', '#42').json.code, 'TARGET_UNAVAILABLE');
+  assert.equal(gh.run('find-item').status, 2);
+  assert.equal(gh.run('find-item', '--query', '  ').status, 2);
+});
