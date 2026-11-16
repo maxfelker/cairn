@@ -8,7 +8,8 @@
 //     issueTypes: ["Task", "Bug", "Feature"] | [] | null (null: host has no types),
 //     labels: [{name, color, description}],
 //     issues: [{number, id, title, body, state: "OPEN"|"CLOSED", labels: [name],
-//               type: name|null, parent: number|null, comments: [{author, body}]}],
+//               type: name|null, parent: number|null, comments: [{author, body}],
+//               pull: true when the number is a pull request, as GitHub's issues API returns them}],
 //     pulls: [{number, state: "MERGED"|"OPEN"|"CLOSED", closes: [issue numbers]}],
 //     calls: [[...argv]] }
 //
@@ -88,9 +89,10 @@ function rest(issue) {
     title: issue.title,
     body: issue.body,
     state: issue.state.toLowerCase(),
-    html_url: `https://github.com/${state.repo}/issues/${issue.number}`,
+    html_url: `https://github.com/${state.repo}/${issue.pull ? 'pull' : 'issues'}/${issue.number}`,
     labels: issue.labels.map((name) => ({ name })),
     type: issue.type ? { name: issue.type } : null,
+    ...(issue.pull ? { pull_request: { url: `https://api.github.com/repos/${state.repo}/pulls/${issue.number}` } } : {}),
   };
 }
 

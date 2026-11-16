@@ -505,6 +505,7 @@ const FIND = {
     { number: 3, title: 'A player can zoom the camera', type: 'Feature', parent: 1 },
     { number: 4, title: 'Add the camera input handler', type: 'Task', parent: 2 },
     { number: 5, title: 'A player can see the minimap', type: 'Feature', parent: 1, state: 'CLOSED' },
+    { number: 6, title: 'Move the camera with WASD', pull: true },
   ],
 };
 const found = (json) => json.matches.map((m) => m.id);
@@ -535,6 +536,17 @@ test('find-item: a link to another repository or host is not this provider', () 
     assert.equal(json.code, 'NOT_THIS_PROVIDER', query);
   }
   assert.equal(gh.run('find-item', '--query', 'https://github.com/octo/repo/pull/7').json.code, 'TARGET_UNAVAILABLE');
+});
+
+test('find-item: a pull request number is not a work item', () => {
+  const gh = fakeGitHub(FIND);
+  for (const query of ['6', '#6', 'https://github.com/octo/repo/issues/6']) {
+    const { status, json } = gh.run('find-item', '--query', query);
+    assert.equal(status, 1, query);
+    assert.equal(json.code, 'TARGET_UNAVAILABLE', query);
+    assert.match(json.message, /pull request/, query);
+  }
+  assert.deepEqual(found(gh.run('find-item', '--query', 'move the camera with WASD').json), ['2'], 'descriptions skip pull requests');
 });
 
 test('find-item: a description with one strong match resolves to it', () => {

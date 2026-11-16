@@ -468,6 +468,13 @@ function findItem({ exec = run, cwd, query } = {}) {
       if (issue.result) return issue.result;
       return fail('TARGET_UNAVAILABLE', `#${id} was not found in ${repo}, or your gh account cannot see it.`, 'Check the item number.');
     }
+    if (issue.data.pull_request) {
+      return fail(
+        'TARGET_UNAVAILABLE',
+        `#${id} is a pull request, not a work item.`,
+        'Name the issue it delivers, or ask to address the feedback on the pull request.',
+      );
+    }
     return done([toMatch(issue.data)], true);
   }
 
