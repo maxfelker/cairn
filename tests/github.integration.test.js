@@ -360,6 +360,7 @@ test('get-item: returns the body, comments, and children with their kinds', () =
   assert.deepEqual(json.item, { id: '1', url: 'https://github.com/octo/repo/issues/1', title: 'Trading', kind: 'epic', state: 'open', body: 'Why…', parent: null });
   assert.equal(gh.run('get-item', '--id', '2').json.item.parent, '1');
   assert.deepEqual(json.comments, [{ author: 'pm', body: 'Include allies?' }, { author: 'octo', body: 'Later.' }]);
+  assert.deepEqual(json.changes, []);
   assert.deepEqual(json.children, [
     { id: '2', title: 'A player can trade food', kind: 'feature', state: 'open' },
     { id: '3', title: 'A player can see caravans', kind: 'feature', state: 'closed' },
@@ -430,4 +431,66 @@ test('order-children: a non-child changes nothing, and bad arguments are usage e
 test('order-children: needs TRIAGE', () => {
   const gh = fakeGitHub({ ...withChildren([2, 3]), permission: 'READ' });
   assert.equal(gh.run('order-children', '--parent', '1', '--ids', '3,2').json.code, 'MISSING_PERMISSION');
+});
+
+// comment: Cairn's comments carry a hidden marker; keyed ones update in place.
+
+test('comment: a new comment ends with the Cairn marker', () => {
+  const gh = fakeGitHub({ issues: [{ number: 1, title: 'Epic', labels: ['epic'] }] });
+  const { status, json } = gh.run('comment', '--on', '1', '--file', gh.draft('c.md', 'Hello.\n\n'));
+  assert.equal(status, 0, JSON.stringify(json));
+  assert.equal(json.created, true);
+  assert.match(json.comment.url, /issues\/1#issuecomment-\d+$/);
+  assert.equal(gh.state().issues[0].comments[0].body, 'Hello.\n\n<!-- cairn -->');
+});
+
+test('comment: the same key updates instead of duplicating, and a new key adds', () => {
+  const gh = fakeGitHub({ issues: [{ number: 1, title: 'Epic', labels: ['epic'] }] });
+  gh.run('comment', '--on', '1', '--key', 'feature-complete-2', '--file', gh.draft('a.md', 'v1'));
+  const again = gh.run('comment', '--on', '1', '--key', 'feature-complete-2', '--file', gh.draft('b.md', 'v2')).json;
+  assert.equal(again.created, false);
+  assert.equal(again.changed, true);
+  const same = gh.run('comment', '--on', '1', '--key', 'feature-complete-2', '--file', gh.draft('c.md', 'v2')).json;
+  assert.equal(same.changed, false, 'identical text makes no change');
+  gh.run('comment', '--on', '1', '--key', 'feature-complete-3', '--file', gh.draft('d.md', 'other'));
+  assert.deepEqual(gh.state().issues[0].comments.map((c) => c.body), [
+    'v2\n\n<!-- cairn key=feature-complete-2 -->',
+    'other\n\n<!-- cairn key=feature-complete-3 -->',
+  ]);
+});
+
+test('comment: a human comment that quotes the marker inline is never edited', () => {
+  const gh = fakeGitHub({
+    issues: [{ number: 1, title: 'Epic', comments: [{ author: 'pm', body: 'Why does Cairn add `<!-- cairn key=k -->` here?' }] }],
+  });
+  const { json } = gh.run('comment', '--on', '1', '--key', 'k', '--file', gh.draft('a.md', 'Cairn summary'));
+  assert.equal(json.created, true);
+  assert.equal(gh.state().issues[0].comments[0].body, 'Why does Cairn add `<!-- cairn key=k -->` here?');
+});
+
+test('comment: READ access can comment; a missing item and bad input change nothing', () => {
+  const gh = fakeGitHub({ permission: 'READ', issues: [{ number: 1, title: 'Epic' }] });
+  assert.equal(gh.run('comment', '--on', '1', '--file', gh.draft('a.md', 'hi')).status, 0);
+  assert.equal(gh.run('comment', '--on', '9', '--file', gh.draft('b.md', 'hi')).json.code, 'TARGET_UNAVAILABLE');
+  assert.equal(gh.run('comment', '--on', '1', '--file', gh.draft('c.md', '  \n')).json.code, 'INVALID_DRAFT');
+  for (const args of [['--on', '1'], ['--on', 'x', '--file', 'f'], ['--on', '1', '--file', 'f', '--key', 'bad key']]) {
+    assert.equal(gh.run('comment', ...args).status, 2, args.join(' '));
+  }
+  assert.equal(gh.state().issues[0].comments.length, 1);
+});
+
+test('get-item: reports the changes that close an item, merged or not', () => {
+  const gh = fakeGitHub({
+    issues: [{ number: 1, title: 'Feature' }, { number: 2, title: 'Task' }],
+    pulls: [
+      { number: 10, state: 'MERGED', closes: [1, 2] },
+      { number: 11, state: 'OPEN', closes: [1] },
+      { number: 12, state: 'CLOSED', closes: [3] },
+    ],
+  });
+  assert.deepEqual(gh.run('get-item', '--id', '1').json.changes, [
+    { id: '10', url: 'https://github.com/octo/repo/pull/10', state: 'merged' },
+    { id: '11', url: 'https://github.com/octo/repo/pull/11', state: 'open' },
+  ]);
+  assert.deepEqual(gh.run('get-item', '--id', '2').json.changes.map((c) => c.id), ['10']);
 });

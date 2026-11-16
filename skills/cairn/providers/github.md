@@ -23,6 +23,9 @@ count:
 - **References:** refer to an item as `#<id>` (for example `- [ ] #12`).
   GitHub expands these into the item's title and status.
 - **Children** are native sub-issues.
+- **Summary lines:** a feature-completed summary names its items line
+  **Issues:** and its changes line **PRs:**, for example
+  `**Issues:** #6, #40, #41` and `**PRs:** #44`.
 
 ## Commands
 
@@ -34,7 +37,8 @@ Run each one as `node "${CLAUDE_SKILL_DIR}/providers/github.js" <command>`.
 | `auth` | `gh auth status --json hosts` | Reports only the login |
 | `access [--for <action>]` | `gh repo view --json viewerPermission,hasIssuesEnabled` | See the role table |
 | `check` | all three | For the setup check |
-| `get-item --id <n>` | `gh api` issue, comments, and sub-issues | |
+| `get-item --id <n>` | `gh api` issue, comments, sub-issues, parent; GraphQL closing PRs | |
+| `comment --on <n> --file - [--key <k>]` | `gh api` issue comments | Adds the hidden Cairn marker |
 | `list-items --kind <kind>` | `gh api` issues by type or label | |
 | `order-children --parent <n> --ids <n,n>` | `gh api` sub-issue reprioritize | Moves only what is out of place |
 | `save-item --kind <kind> --file - [--parent <n>]` | `gh api` create or update, and sub-issue link | |

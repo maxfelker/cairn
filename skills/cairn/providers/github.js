@@ -4,7 +4,7 @@
 
 'use strict';
 
-const { KINDS, run, fail, gitRemote, readDraft, flags, cli } = require('./lib.js');
+const { KINDS, run, fail, gitRemote, readDraft, readBody, flags, cli } = require('./lib.js');
 
 const PROVIDER = 'github';
 const HOST = 'github.com';
@@ -378,7 +378,19 @@ function kindOf(issue) {
   return label || null;
 }
 
-// One item, with its comments and children, for reading before planning.
+// The pull requests that close an issue, merged or not: the contract's
+// "changes". Only GraphQL exposes this link.
+function closingChanges(ctx, repo, id) {
+  const [owner, name] = repo.split('/');
+  const query = 'query($owner: String!, $name: String!, $number: Int!) { repository(owner: $owner, name: $name) { issue(number: $number) { closedByPullRequestsReferences(first: 50, includeClosedPrs: true) { nodes { number url state } } } } }';
+  const res = api(ctx, ['graphql', '-f', `query=${query}`, '-f', `owner=${owner}`, '-f', `name=${name}`, '-F', `number=${id}`]);
+  if (!res.ok) return res;
+  const nodes = res.data.data.repository.issue.closedByPullRequestsReferences.nodes;
+  return { ok: true, data: nodes.map((n) => ({ id: String(n.number), url: n.url, state: n.state.toLowerCase() })) };
+}
+
+// One item, with its comments, children, parent, and closing changes, for
+// reading before planning or summarizing.
 function getItem({ exec = run, cwd, id } = {}) {
   const t = target({ exec, cwd });
   if (!t.ok) return t;
@@ -396,6 +408,8 @@ function getItem({ exec = run, cwd, id } = {}) {
   if (!children.ok) return failed(children, `reading sub-issues of #${id}`);
   const parent = api(ctx, [`repos/${repo}/issues/${id}/parent`]);
   if (!parent.ok && !(parent.r && /404/.test(parent.r.stderr))) return failed(parent, `reading the parent of #${id}`);
+  const changes = closingChanges(ctx, repo, id);
+  if (!changes.ok) return failed(changes, `reading the pull requests that close #${id}`);
 
   const i = issue.data;
   return {
@@ -404,6 +418,7 @@ function getItem({ exec = run, cwd, id } = {}) {
     item: { ...toItem(i), kind: kindOf(i), state: i.state, body: i.body || '', parent: parent.ok ? String(parent.data.number) : null },
     comments: comments.data.map((c) => ({ author: c.user && c.user.login, body: c.body })),
     children: children.data.map((c) => ({ id: String(c.number), title: c.title, kind: kindOf(c), state: c.state })),
+    changes: changes.data,
   };
 }
 
@@ -461,6 +476,59 @@ function orderChildrenArgs(args) {
   return orderChildren({ parent: f.parent, ids });
 }
 
+// Every Cairn comment ends with a hidden marker, so people and tools can tell
+// it is Cairn's. A keyed marker makes a comment updatable: posting with the
+// same key edits that comment instead of adding another.
+function marker(key) {
+  return key ? `<!-- cairn key=${key} -->` : '<!-- cairn -->';
+}
+
+function comment({ exec = run, cwd, id, file, key } = {}) {
+  const body = readBody(file);
+  if (!body.ok) return body;
+
+  const t = target({ exec, cwd });
+  if (!t.ok) return t;
+  const repo = t.target;
+  const ctx = { exec, cwd };
+
+  const a = access({ exec, cwd, repo, action: 'comment' });
+  if (!a.ok) return a;
+
+  const issue = api(ctx, [`repos/${repo}/issues/${id}`]);
+  if (!issue.ok) {
+    if (issue.result) return issue.result;
+    return fail('TARGET_UNAVAILABLE', `#${id} was not found in ${repo}.`, 'Check the item number.');
+  }
+
+  const mark = marker(key);
+  const text = `${body.text}\n\n${mark}`;
+
+  let existing = null;
+  if (key) {
+    const list = apiList(ctx, `repos/${repo}/issues/${id}/comments?per_page=100`);
+    if (!list.ok) return failed(list, `reading comments on #${id}`);
+    existing = list.data.find((c) => (c.body || '').split('\n').some((line) => line.trim() === mark)) || null;
+  }
+
+  const toComment = (c) => ({ id: String(c.id), url: c.html_url });
+  if (existing && existing.body === text) {
+    return { ok: true, provider: PROVIDER, comment: toComment(existing), created: false, changed: false };
+  }
+  const res = existing
+    ? api(ctx, ['-X', 'PATCH', `repos/${repo}/issues/comments/${existing.id}`], { body: text })
+    : api(ctx, ['-X', 'POST', `repos/${repo}/issues/${id}/comments`], { body: text });
+  if (!res.ok) return failed(res, existing ? `updating a comment on #${id}` : `commenting on #${id}`);
+  return { ok: true, provider: PROVIDER, comment: toComment(res.data), created: !existing, changed: true };
+}
+
+function commentArgs(args) {
+  const f = flags(args, ['on', 'file', 'key']);
+  if (!f || !/^\d+$/.test(f.on || '') || !f.file) return null;
+  if (f.key !== undefined && !/^[a-z0-9][a-z0-9._-]*$/i.test(f.key)) return null;
+  return comment({ id: f.on, file: f.file, key: f.key });
+}
+
 function listItemsArgs(args) {
   const f = flags(args, ['kind']);
   if (!f || !KINDS.includes(f.kind)) return null;
@@ -485,6 +553,7 @@ const commands = {
   auth: (args) => (args.length ? null : auth()),
   access: accessArgs,
   check: (args) => (args.length ? null : check()),
+  comment: commentArgs,
   'get-item': getItemArgs,
   'list-items': listItemsArgs,
   'order-children': orderChildrenArgs,
@@ -495,4 +564,4 @@ if (require.main === module) {
   process.exitCode = cli(commands, process.argv.slice(2));
 }
 
-module.exports = { name: PROVIDER, commands, actions: ACTIONS, kinds: KIND_LABELS, parseRemote, target, auth, access, check, getItem, listItems, orderChildren, saveItem };
+module.exports = { name: PROVIDER, commands, marker, comment, actions: ACTIONS, kinds: KIND_LABELS, parseRemote, target, auth, access, check, getItem, listItems, orderChildren, saveItem };
