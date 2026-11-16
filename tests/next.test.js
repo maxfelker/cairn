@@ -10,6 +10,7 @@ const { spawnSync } = require('node:child_process');
 
 const SCRIPT = path.join(__dirname, '..', 'skills', 'cairn', 'next.js');
 const { nextStep } = require(SCRIPT);
+const { MARKER, coversLine } = require('../skills/cairn/architecture.js');
 
 const item = (kind, extra = {}) => ({ id: '1', title: 'Item', kind, state: 'open', ...extra });
 const child = (id, state = 'open', kind = 'task') => ({ id, title: `Child ${id}`, kind, state });
@@ -29,14 +30,33 @@ test('an epic or feature with no children is broken down', () => {
   assert.match(nextStep({ item: item('epic') }).reason, /no features/);
 });
 
+// A current architecture for these children, as a get-item comment.
+const architected = (children) => [{ author: 'octo', body: `Architecture\n\n${coversLine(children.filter((c) => c.state !== 'closed'))}\n\n${MARKER}` }];
+
 test('an epic or feature with open children works on the first open one, in order', () => {
   const children = [child('7', 'closed'), child('4'), child('3')];
   for (const kind of ['epic', 'feature']) {
-    const r = nextStep({ item: item(kind), children });
+    const r = nextStep({ item: item(kind), children, comments: architected(children) });
     assert.equal(r.step, 'work-on-child', kind);
     assert.deepEqual(r.item, { id: '4', title: 'Child 4', kind: 'task' }, 'the first open child, not the lowest id');
     assert.match(r.reason, /2 of 3 open/);
   }
+});
+
+test('an epic with open features and no current architecture records one first', () => {
+  const children = [child('2', 'closed', 'feature'), child('3', 'open', 'feature')];
+  const missing = nextStep({ item: item('epic'), children });
+  assert.equal(missing.step, 'architect');
+  assert.deepEqual(missing.item, { id: '1', title: 'Item', kind: 'epic' });
+  assert.match(missing.reason, /no architecture/);
+
+  const added = [...children, child('5', 'open', 'feature')];
+  const stale = nextStep({ item: item('epic'), children: added, comments: architected(children) });
+  assert.equal(stale.step, 'architect');
+  assert.match(stale.reason, /does not cover #5/);
+
+  assert.equal(step({ item: item('epic'), children, comments: architected(children) }), 'work-on-child');
+  assert.equal(step({ item: item('feature'), children: [child('8')] }), 'work-on-child', 'a feature never needs its own architecture');
 });
 
 test('a feature whose children are all closed is finished', () => {
