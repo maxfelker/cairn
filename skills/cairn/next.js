@@ -12,6 +12,7 @@
 // Steps:
 //   done            the item is closed
 //   break-down      an epic with no features, or a feature with no tasks
+//   architect       an epic with open features and no current architecture
 //   work-on-child   an epic or feature with open children: the first, in order
 //   finish-feature  a feature whose children are all closed
 //   release         an epic whose features are all closed
@@ -21,10 +22,11 @@
 'use strict';
 
 const fs = require('node:fs');
+const architecture = require('./architecture.js');
 
 const PARENT_KINDS = { epic: 'feature', feature: 'task' };
 
-function nextStep({ item, children = [], changes = [] }) {
+function nextStep({ item, children = [], changes = [], comments = [] }) {
   const self = { id: item.id, title: item.title, kind: item.kind };
   const step = (name, reason, target = self) => ({ ok: true, step: name, item: target, reason });
   const ref = (i) => `#${i.id} "${i.title}"`;
@@ -37,6 +39,10 @@ function nextStep({ item, children = [], changes = [] }) {
       return step('break-down', `${ref(item)} is a ${item.kind} with no ${childKind}s yet.`);
     }
     const open = children.find((c) => c.state !== 'closed');
+    if (open && item.kind === 'epic') {
+      const arch = architecture.status({ comments, children });
+      if (arch.status !== 'current') return step('architect', arch.reason);
+    }
     if (open) {
       const left = children.filter((c) => c.state !== 'closed').length;
       return step(
