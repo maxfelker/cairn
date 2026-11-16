@@ -74,11 +74,43 @@ pre-approved permission matches. Each command prints one JSON object. If `ok` is
 `message` and `fix`. Use adapter commands for everything they cover. Do not
 improvise the provider's own commands for the same thing.
 
+When a failure stops work on an item and the user cannot fix it in this
+session, also post a `**Blocked:**` comment on the item (see Comments), so
+whoever picks it up next knows. Skip this when the failure is that Cairn
+cannot reach or comment on the provider at all.
+
 **Check access before every change.** Before Cairn creates, labels, links,
 comments, pushes, or opens a change for review, run
 `access --for <action>` with the matching contract action. If it fails, stop
 before the change and tell the user the message and the fix. Never work
 around a failed check.
+
+## Comments
+
+Comments are how people who were not in the session follow the work.
+Cairn's comments are short, in plain language, and one of four kinds, named
+on the first line:
+
+| Kind | Post it when | It must also say |
+|---|---|---|
+| `**Progress:**` | A step of the work lands: a branch pushed, a change opened, a check passed | What is next, when it is not obvious |
+| `**Decision:**` | You make a choice the item does not already settle | `**Why:**` on its own line |
+| `**Question:**` | You need an answer to continue, and asked the user | Nothing more. Wait for the answer |
+| `**Blocked:**` | You stop on something you cannot resolve, such as a failed command or missing access | `**Needed:**` on its own line, with what would unblock it |
+
+- **Where:** planning, decisions, questions, and blockers go on the work
+  item. Implementation review goes on the change. A decision about a
+  whole epic goes on the epic.
+- **Keep it small:** one point per comment, a few lines. Refer to items and
+  changes in the provider's short form.
+- **Check, then post:** pipe the draft to `structure.js comment -`, fix
+  every problem, then post it with `comment --on <id> --file -`. The
+  adapter adds Cairn's marker.
+- **Do not narrate.** Reading, planning, and drafting are not progress.
+  Post when something changed that a collaborator would want to know.
+
+Summaries with their own shape, such as the feature-completed summary and
+the architecture, are not checked as comments.
 
 ## Setup check
 

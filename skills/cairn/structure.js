@@ -8,6 +8,7 @@
 //
 //   node structure.js <kind> <draft.md>   (use - to read the draft from stdin)
 //   node structure.js feature <draft.md> --for <who the epic is for>
+//   node structure.js comment <draft.md>   a comment has no "# <title>" line
 //   exit 0  {"ok": true, "kind": "...", "title": "..."}
 //   exit 1  {"ok": false, "kind": "...", "problems": ["..."]}
 //   exit 2  wrong usage
@@ -226,7 +227,40 @@ function checkEpic(text) {
     : { ok: true, kind: 'epic', title };
 }
 
-const CHECKS = { epic: checkEpic, feature: checkFeature, task: checkTask };
+// A comment is one of four kinds, named on its first line as
+// "**<Kind>:** <one line>". A decision says why, and a blocker says what is
+// needed to continue, each on its own labeled line.
+const COMMENT_KINDS = ['Progress', 'Decision', 'Question', 'Blocked'];
+const COMMENT_NEEDS = {
+  Decision: { label: 'Why', hint: 'Say why on its own line, as "**Why:** …".' },
+  Blocked: { label: 'Needed', hint: 'Say what is needed to continue on its own line, as "**Needed:** …".' },
+};
+
+function checkComment(text) {
+  const problems = [];
+  const lines = text.replace(/\r\n/g, '\n').split('\n');
+  const first = lines.find((l) => l.trim() !== '') || '';
+  const m = /^\*\*([A-Za-z]+):\*\*\s*(.*)$/.exec(first.trim());
+  const kind = m && COMMENT_KINDS.find((k) => k.toLowerCase() === m[1].toLowerCase());
+
+  if (!m || !kind) {
+    problems.push(`Start the comment with its kind: "**<Kind>:** <one line>", where the kind is ${COMMENT_KINDS.join(', ')}.`);
+  } else {
+    if (!m[2].trim()) problems.push(`Say what the ${kind.toLowerCase()} is on the first line, after "**${kind}:**".`);
+    const need = COMMENT_NEEDS[kind];
+    if (need) {
+      const label = new RegExp(`^\\*{0,2}${need.label}:\\*{0,2}`, 'i');
+      const said = lines.some((l) => label.test(l.trim()) && l.trim().replace(label, '').trim() !== '');
+      if (!said) problems.push(`A ${kind.toLowerCase()} needs a "${need.label}" line. ${need.hint}`);
+    }
+  }
+
+  return problems.length
+    ? { ok: false, kind: 'comment', problems }
+    : { ok: true, kind: 'comment', comment: kind.toLowerCase() };
+}
+
+const CHECKS = { epic: checkEpic, feature: checkFeature, task: checkTask, comment: checkComment };
 
 function main(argv) {
   const [kind, file, ...rest] = argv;
@@ -251,4 +285,4 @@ if (require.main === module) {
   process.exitCode = main(process.argv.slice(2));
 }
 
-module.exports = { parse, checkEpic, checkFeature, checkTask, criterionProblem, EPIC_SECTIONS, FEATURE_SECTIONS, TASK_SECTIONS };
+module.exports = { parse, checkEpic, checkFeature, checkTask, checkComment, COMMENT_KINDS, criterionProblem, EPIC_SECTIONS, FEATURE_SECTIONS, TASK_SECTIONS };

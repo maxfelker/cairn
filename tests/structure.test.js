@@ -306,3 +306,48 @@ test('task: alternate headings are accepted', () => {
   const text = TASK.replace('## Implementation guidance', '## How').replace('## Validation', '## Testing').replace('## Done when', '## Definition of done');
   assert.equal(checkTask(text).ok, true);
 });
+
+// Comments
+
+const { checkComment } = require('../skills/cairn/structure.js');
+
+const commentProblems = (text) => {
+  const result = checkComment(text);
+  assert.equal(result.ok, false, `expected the comment to be rejected: ${text}`);
+  return result.problems.join('\n');
+};
+
+test('comment: each kind passes in its shape', () => {
+  const good = {
+    progress: '**Progress:** The camera module is pushed.\n\nUnit tests pass. Next: WASD input.',
+    decision: '**Decision:** One camera module owns the view.\n\n**Why:** pan and zoom must share one edge rule.',
+    question: '**Question:** Should the minimap be its own feature?',
+    blocked: '**Blocked:** Pushing the branch was refused.\n\n**Needed:** WRITE access to the repository.',
+  };
+  for (const [kind, text] of Object.entries(good)) {
+    assert.deepEqual(checkComment(text), { ok: true, kind: 'comment', comment: kind }, kind);
+  }
+  assert.equal(checkComment('\n\n**decision:** lower case kind.\n\nWhy: it reads the same.').ok, true, 'kind and label ignore case and leading blank lines');
+});
+
+test('comment: the first line names a known kind and says something', () => {
+  assert.match(commentProblems('Pushed the camera module.'), /Start the comment with its kind/);
+  assert.match(commentProblems('**Note:** Pushed it.'), /Start the comment with its kind/);
+  assert.match(commentProblems('**Progress:**\n\nTests pass.'), /Say what the progress is on the first line/);
+  assert.match(commentProblems(''), /Start the comment with its kind/);
+});
+
+test('comment: a decision says why, and a blocker says what is needed', () => {
+  assert.match(commentProblems('**Decision:** One camera module.\n\nIt is simpler.'), /needs a "Why" line/);
+  assert.match(commentProblems('**Decision:** One camera module.\n\n**Why:**'), /needs a "Why" line/, 'an empty label does not count');
+  assert.match(commentProblems('**Blocked:** Push refused.\n\nThe branch is protected.'), /needs a "Needed" line/);
+});
+
+test('comment: the CLI checks a comment with exit codes 0, 1, and 2', () => {
+  const run = (input, ...args) => spawnSync(process.execPath, [SCRIPT, 'comment', '-', ...args], { input, encoding: 'utf8' });
+  const ok = run('**Question:** Which zoom range?');
+  assert.equal(ok.status, 0);
+  assert.equal(JSON.parse(ok.stdout).comment, 'question');
+  assert.equal(run('Just text').status, 1);
+  assert.equal(run('**Question:** Which zoom range?', '--for', 'Players').status, 2, 'only features take --for');
+});
