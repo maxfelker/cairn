@@ -7,6 +7,7 @@
 // the body.
 //
 //   node structure.js <kind> <draft.md>   (use - to read the draft from stdin)
+//   node structure.js feature <draft.md> --for <who the epic is for>
 //   exit 0  {"ok": true, "kind": "...", "title": "..."}
 //   exit 1  {"ok": false, "kind": "...", "problems": ["..."]}
 //   exit 2  wrong usage
@@ -26,8 +27,12 @@ const EPIC_SECTIONS = [
   { key: 'criteria', label: 'Acceptance Criteria', names: ['acceptance criteria'] },
 ];
 
-// Personas experience a capability. Builders and system parts do not.
-const NOT_PERSONAS = /^(developers?|devs?)$/i;
+// Personas experience a capability. System parts never do. The people who
+// build a product are a persona only when the product is for them, as with a
+// developer tool: the epic's "Who it is for" says so. The gate is against
+// technology as the goal, not against developers as users.
+const BUILDERS = /^(developers?|devs?)$/i;
+const NAMES_BUILDERS = /\b(developers?|devs?)\b/i;
 const SYSTEM_WORDS = /\b(system|component|module|service|manager|framework|foundation|infrastructure|pipeline|backend|api)\b/i;
 
 function normalize(heading) {
@@ -61,15 +66,16 @@ function parse(text) {
 const ITEM_REF = /^(#\d+|[A-Z][A-Z0-9]+-\d+)$/;
 
 // Check one capability statement: "A <persona> can <capability>". `what`
-// names it in messages. Returns a problem string, or null.
-function capabilityProblem(text, what) {
+// names it in messages. `audience` is the epic's "Who it is for" text, when
+// known. Returns a problem string, or null.
+function capabilityProblem(text, what, audience = '') {
   const m = /^an?\s+(.+?)\s+can\s+(\S.*)$/i.exec(text);
   if (!m) {
     return `${what} "${text}" is not a capability. Write it as "A <persona> can <do or perceive something>".`;
   }
   const persona = m[1];
-  if (NOT_PERSONAS.test(persona)) {
-    return `${what} "${text}" uses "${persona}" as the persona. A developer is not a persona: name who experiences the capability, or move this work to a task.`;
+  if (BUILDERS.test(persona) && !NAMES_BUILDERS.test(audience)) {
+    return `${what} "${text}" uses "${persona}" as the persona, but the epic's "Who it is for" does not name developers. If the epic is for developers, say so there. Otherwise name who experiences the capability, or move this work to a task.`;
   }
   if (SYSTEM_WORDS.test(persona)) {
     return `${what} "${text}" names a system part ("${persona}") as the persona. Name the person or actor who experiences it.`;
@@ -78,9 +84,9 @@ function capabilityProblem(text, what) {
 }
 
 // Check one epic acceptance criterion. Returns a problem string, or null.
-function criterionProblem(item) {
+function criterionProblem(item, audience = '') {
   if (ITEM_REF.test(item)) return null;
-  return capabilityProblem(item, 'Acceptance criterion');
+  return capabilityProblem(item, 'Acceptance criterion', audience);
 }
 
 function listItems(section) {
@@ -98,14 +104,15 @@ const FEATURE_SECTIONS = [
 // A feature is one capability a persona gains. Its title is the capability
 // statement, its body opens with plain prose restating it, and it lists the
 // expected behavior and its acceptance criteria (the tasks that deliver it).
-function checkFeature(text) {
+// `audience` is its epic's "Who it is for" text.
+function checkFeature(text, { audience = '' } = {}) {
   const problems = [];
   const { title, intro, sections } = parse(text);
 
   if (!title) {
     problems.push('The draft must start with a "# <title>" line.');
   } else {
-    const problem = capabilityProblem(title, 'The title');
+    const problem = capabilityProblem(title, 'The title', audience);
     if (problem) problems.push(problem);
     else if (/\b(and|or)\b/i.test(title.replace(/^an?\s+.+?\s+can\s+/i, ''))) {
       problems.push(`The title "${title}" has more than one capability ("and" or "or"). Split it into separate features.`);
@@ -207,8 +214,9 @@ function checkEpic(text) {
     if (items.length === 0) {
       problems.push('"Acceptance Criteria" has no items. List each capability as "- [ ] A <persona> can …".');
     }
+    const audience = found.who ? found.who.lines.join('\n') : '';
     for (const item of items) {
-      const problem = criterionProblem(item);
+      const problem = criterionProblem(item, audience);
       if (problem) problems.push(problem);
     }
   }
@@ -222,8 +230,9 @@ const CHECKS = { epic: checkEpic, feature: checkFeature, task: checkTask };
 
 function main(argv) {
   const [kind, file, ...rest] = argv;
-  if (!CHECKS[kind] || !file || rest.length) {
-    process.stderr.write(`usage: structure.js <${Object.keys(CHECKS).join('|')}> <draft.md>\n`);
+  const audience = kind === 'feature' && rest.length === 2 && rest[0] === '--for' ? rest[1] : null;
+  if (!CHECKS[kind] || !file || (rest.length && audience === null)) {
+    process.stderr.write(`usage: structure.js <${Object.keys(CHECKS).join('|')}> <draft.md>   (feature also takes --for <who the epic is for>)\n`);
     return 2;
   }
   let text;
@@ -233,7 +242,7 @@ function main(argv) {
     process.stderr.write(`cannot read ${file}: ${err.message}\n`);
     return 2;
   }
-  const result = CHECKS[kind](text);
+  const result = CHECKS[kind](text, { audience: audience || '' });
   process.stdout.write(`${JSON.stringify(result)}\n`);
   return result.ok ? 0 : 1;
 }

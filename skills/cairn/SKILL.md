@@ -166,8 +166,11 @@ epic").
      line, as `- [ ] A <persona> can <do or perceive something>`.
 
    A persona is someone or something that experiences the capability: a
-   customer, a player, a reviewer, an enemy AI. A developer is not a
-   persona. Never name a system, component, or foundation as a criterion.
+   customer, a player, a reviewer, an enemy AI. Each criterion is something
+   that persona gains, never technology for its own sake. Never name a
+   system, component, or foundation as a criterion. The people building the
+   product are a persona only when the product is for them, as with a
+   developer tool, and then `## Who it is for` must say so.
    Use only what the user said, plus reasonable inferences. If you can't
    tell who the work is for, or what success means, ask one short question
    before drafting.
@@ -200,8 +203,13 @@ whoever experiences it.
      a system instead of an action, split it.
    - **A persona is someone or something that directly experiences the
      capability:** a customer, a player, an enemy AI, or a surface they
-     perceive. A developer is not a persona. Never create a
-     "A developer can …" feature.
+     perceive. Take personas from the epic's `## Who it is for`. Developers
+     are a persona only when the epic is for developers. Most products are
+     not, but a developer tool is.
+   - **The capability is the goal, never the technology.** Reject a feature
+     whose point is building or adopting a component, library, or
+     integration, whoever its persona is: "A developer can add a trade API"
+     is a task, while "A developer can publish a mod" is a capability.
    - **Describe behavior, not architecture.** Say what the persona can do
      or perceive, and how they would see it working. Classes, files, and
      components belong in tasks.
@@ -216,7 +224,8 @@ whoever experiences it.
    the capability in plain language; `## Expected behavior`, describing
    what the persona sees when it works; and `## Acceptance Criteria`,
    listing the tasks needed to deliver it, with any substrate tasks first.
-   Pipe each draft to `structure.js feature -`, and fix every problem.
+   Pipe each draft to `structure.js feature - --for "<who it is for>"`,
+   quoting the epic's `## Who it is for` text, and fix every problem.
 4. **Save each feature.** Pipe it to
    `save-item --kind feature --parent <epic> --file -`. This creates and
    links a new feature, or updates the existing one with that title.
@@ -265,9 +274,11 @@ capability: concrete engineering steps a person or an agent can pick up.
 7. **Update the feature.** Replace the items in its Acceptance Criteria with
    one reference per task, in order, written the way the provider reference
    says to reference an item. Keep the rest of the feature as it is,
-   including its title. Check it with `structure.js feature -`, and save it
-   with `save-item --kind feature`, adding `--parent <parent>` when
-   `get-item` reported one.
+   including its title. Check it with
+   `structure.js feature - --for "<who it is for>"`, quoting the parent
+   epic's `## Who it is for` (read it with `get-item`), and save it with
+   `save-item --kind feature`, adding `--parent <parent>` when `get-item`
+   reported one.
 8. **Reply briefly.** List the tasks in order as references, marking each as
    new or already existing. Mention any feature you proposed, and suggest
    working on the first task as the next step.
