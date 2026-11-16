@@ -4,8 +4,9 @@ description: >
   Delegate software delivery while keeping the shared record in the team's SDLC
   tool (GitHub Issues, pull requests, and releases) instead of local files. Use
   when the user wants to plan an idea, turn it into an epic, break work into
-  features or tasks, work on or implement an issue ("work on #42"), address
-  issue or review feedback, check whether a pull request is ready, or cut a
+  features or tasks, work on, pick up, or continue an item by number, link, or
+  description ("work on #42", "pick up the next task", "work on the camera
+  feature"), address issue or review feedback, check whether a pull request is ready, or cut a
   release, and when they ask whether Cairn is set up or ready ("is Cairn set
   up?", "check Cairn").
 license: GPL-3.0-only
@@ -17,6 +18,7 @@ allowed-tools:
   - Bash(git rev-parse --is-inside-work-tree)
   - Bash(git remote)
   - Bash(node "${CLAUDE_SKILL_DIR}/structure.js":*)
+  - Bash(node "${CLAUDE_SKILL_DIR}/next.js":*)
   - Bash(node "${CLAUDE_SKILL_DIR}/providers/github.js":*)
 ---
 
@@ -301,3 +303,54 @@ then reads as a running record of shipped capabilities.
    also names the two summary lines.
 4. **Reply** with the link to the comment.
 
+### Work on an item
+
+Use this when the user names something to work on, in any words ("work on
+#42", "pick up the next task on the camera feature", "continue the release
+feature"). Work from the provider's current state alone, never from memory
+of an earlier session or from local planning files. A brand-new session
+must reach the same step.
+
+1. **Find the item.** Pass the reference, link, or description to
+   `find-item --query <text>`. Leave out the surrounding words ("work on",
+   "pick up the next task on") and keep what names the item.
+   - `exact` is true: use the single match.
+   - Several matches: ask one short question listing them as references
+     with their titles, and wait. Do not guess.
+   - No matches: say so, and ask which item they mean.
+2. **Read it.** Run `get-item --id <id>`.
+3. **Choose the step.** Pipe the same `get-item` result to `next.js -`:
+
+   ```
+   node "${CLAUDE_SKILL_DIR}/providers/<provider>.js" get-item --id <id> | node "${CLAUDE_SKILL_DIR}/next.js" -
+   ```
+
+   Follow the step it gives. Do not pick a different one. Tell the user the
+   step and its `reason` in one line.
+4. **Act on the step.**
+   - `break-down`: say it has no features (or tasks) yet, and offer to
+     break it down. Breaking down creates items, so wait for a yes unless
+     the user already asked for a breakdown. Then run **Break an epic into
+     features** or **Break a feature into tasks**. For a feature small
+     enough to build in one change, that workflow says so.
+   - `work-on-child`: say which child is next, then repeat from step 2 on
+     that child. When the user asked for "the next task", this is how you
+     reach it.
+   - `finish-feature`: run **Finish a feature**.
+   - `release`: say every feature is closed. Releasing is not supported
+     yet.
+   - `done`: say it is closed, and offer the next open sibling if the
+     parent has one.
+   - `implement` or `continue-change`: get the parent with `get-item` too.
+     Read the item's body, its comments, and the parent's body. Comments
+     often carry later decisions. For `continue-change`, also look at the
+     open change it names. Then reply with a short summary **before
+     writing any code**:
+     - what the item asks for, in a sentence;
+     - your approach, as a few steps, naming the files or areas you expect
+       to touch;
+     - open questions, or anything the item leaves unclear.
+
+     Stop there and ask whether to proceed. Branch, commit, and change
+     conventions are not supported yet, so do not create branches or edit
+     files in this workflow.

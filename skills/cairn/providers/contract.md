@@ -27,6 +27,7 @@ contract. A new provider is done when it passes.
 | `access [--for <action>]` | What may the user do on the target? | `permission`, `allowed` (the actions the user may take) |
 | `check` | All of the above, for the setup check | `target`, `auth`, `access` (each a full result) |
 | `comment --on <id> --file <text\|-> [--key <key>]` | Comment on an item as Cairn. With a key, update Cairn's earlier comment with that key instead of adding another | `comment` (`id`, `url`), `created`, `changed` |
+| `find-item --query <text>` | Which item does the user mean? A reference (`42`, `#42`) or a link to an item in this target is one exact match. A link elsewhere is `NOT_THIS_PROVIDER`. Plain text matches open item titles by shared words | `matches` (each `id`, `title`, `kind`, `state`, `url`; best first, up to 5), `exact` (true when there is one clear match, and then the only one listed) |
 | `get-item --id <id>` | What does this item say, and what is under it? | `item` (`id`, `url`, `title`, `kind`, `state`, `body`, `parent` or null), `comments` (`author`, `body`), `children` (`id`, `title`, `kind`, `state`), `changes` (`id`, `url`, `state`: `merged`, `open`, or `closed`): the changes that close it |
 | `list-items --kind <kind>` | Which open items of this kind exist? | `items` (each `id`, `url`, `title`) |
 | `order-children --parent <id> --ids <id,id,…>` | Put these children first, in this order (others keep their order after them) | `order`, `moved` (0 when already in order) |
