@@ -7,8 +7,8 @@ description: >
   features or tasks, design or record an epic's architecture ("how should we
   build epic #1?"), work on, pick up, or continue an item by number, link, or
   description ("work on #42", "pick up the next task", "work on the camera
-  feature"), address issue or review feedback, check whether a pull request is ready, or cut a
-  release, and when they ask whether Cairn is set up or ready ("is Cairn set
+  feature"), address issue or review feedback, check whether a pull request is
+  ready or merge one ("is #31 ready?", "merge PR #31"), or cut a release, and when they ask whether Cairn is set up or ready ("is Cairn set
   up?", "check Cairn").
 license: GPL-3.0-only
 # Pre-approve only the read-only setup checks and Cairn's own adapters, so the
@@ -496,6 +496,72 @@ discussion that prompted it.
    and a link to your reply. Name any question still waiting for an
    answer, and a pending review of theirs.
 
+### Check readiness and merge
+
+Use this when the user asks whether a change is ready ("is #31 ready to
+merge?", "can we ship the camera feature?"), or asks to merge one. Cairn
+gives one clear verdict, posts it on the change so everyone reads the same
+answer, and merges only after the developer says yes.
+
+1. **Find the change** as **Address feedback** step 1 says, and read each
+   item it closes with `get-item`. For a feature, read its tasks too: their
+   **Done when** items are the feature's criteria.
+2. **Check each criterion.** For each checklist item in the **Done when**
+   or **Acceptance criteria** of every closing item, decide whether the
+   change meets it. Read the diff (`git diff origin/main...<branch>`) and
+   the commits. Give evidence for each: a commit, a test, a file, or a
+   check. Say "not met" when you cannot find evidence. Do not assume.
+3. **Check the rest.** From `get-change`:
+   - **Checks:** `checks.state`. `failed` or `pending` is not ready. Name
+     each failed or pending run. With no checks, say so.
+   - **Review:** `review.decision`. `changes_requested` or
+     `review_required` is not ready. If `review.pending` is true, the
+     developer has an unsubmitted review: say so.
+   - **Feedback:** run `next.js` with `--change`, as **Work on an item**
+     says. `address-feedback` is not ready.
+   - **Branch:** `mergeable` `conflicting` is not ready. When `behind` is
+     more than 0, say how many commits behind `main` the branch is. It
+     blocks only when `mergeState` is `behind` or `blocked`.
+4. **Give the verdict.** The change is ready when every criterion is met
+   and nothing in step 3 blocks it. Otherwise list exactly what remains,
+   one line each, with what would fix it.
+5. **Post it on the change.** Pipe the summary to
+   `comment --on <change> --key readiness --file -`. The key makes a
+   re-run update the same comment instead of adding another. Use this
+   shape:
+
+   ```
+   **Ready to merge.** <or> **Not ready to merge:** <how many> things remain.
+
+   <One or two plain sentences on the verdict.>
+
+   | Criterion | Met | Evidence |
+   |---|---|---|
+   | <criterion, with its item reference> | Yes / No | <commit, test, file, or check> |
+
+   **Checks:** <state, and any failed or pending run>
+   **Review:** <decision, and who approved or asked for changes>
+   **Branch:** <up to date or how far behind; conflicts or none>
+
+   **Remains:**
+   - <one line per thing left, and what would fix it>
+   ```
+
+   Leave out **Remains** when the change is ready.
+6. **Offer to merge, only when ready.** Ask one plain question, such as
+   "#31 is ready. Merge it into main?", and wait. A yes means an explicit
+   yes to merging this change, in this session. When the user's own
+   request was to merge this change, that request is the yes. Approval for
+   another change, or from an earlier session, does not count. When the
+   change is not ready, never offer to merge, even if asked: say what
+   remains.
+7. **Merge on a yes.** Run `merge-change --id <change> --approved`.
+   - `PROTECTED`: report GitHub's rule as it is, and what would satisfy
+     it. Never work around it.
+   - Any other failure: report it, and leave the change open.
+8. **Finish.** After the merge, run **Finish a feature** for each feature
+   the change closed, and reply with the link to the merged change.
+
 ### Finish a feature
 
 Run this right after the last change for a feature merges, and whenever the
@@ -605,7 +671,8 @@ These rules have no exceptions:
 - Never stash, discard, overwrite, or commit changes you did not make.
 - Never run git or the provider's own commands for something a change
   command covers: `start-change`, `push-change`, and `save-change`.
-- Never merge. Merging needs the user's approval and is not supported yet.
+- Never merge here. Merging happens only in **Check readiness and merge**,
+  after the developer approves.
 
 1. **Pick the unit.** The unit is the item the change is for.
    - A task under a feature: the unit is the feature. A feature gets one
@@ -704,7 +771,8 @@ These rules have no exceptions:
      items. Follow the `fix`. When the fix needs the provider's own page,
      tell the user what to do there, and do not call the change ready.
 7. **Reply briefly** with the link to the change, what was validated, and
-   anything left open. The user reviews and merges it.
+   anything left open. The user reviews it. When they ask whether it is
+   ready, or to merge it, run **Check readiness and merge**.
 
 For `continue-change`, the change is already open. Do steps 2 to 5, then
 run `save-change` again when the description no longer matches the work.
