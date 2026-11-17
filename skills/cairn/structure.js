@@ -227,11 +227,12 @@ function checkEpic(text) {
     : { ok: true, kind: 'epic', title };
 }
 
-// A comment is one of four kinds, named on its first line as
+// A comment is one of three kinds, named on its first line as
 // "**<Kind>:** <the bottom line>". The rest is plain prose: short sentences
 // and no labeled lines. A decision goes on to say why, and a blocker goes on
 // to say what is needed to continue.
-const COMMENT_KINDS = ['Progress', 'Decision', 'Question', 'Blocked'];
+// Progress has no kind: it is reported once, by the feature-completed summary.
+const COMMENT_KINDS = ['Decision', 'Question', 'Blocked'];
 const COMMENT_NEEDS = {
   Decision: 'After the first line, say why in a sentence or two.',
   Blocked: 'After the first line, say what failed and what is needed to continue.',

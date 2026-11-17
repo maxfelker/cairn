@@ -91,12 +91,11 @@ Comments are how people who were not in the session follow the work. Write
 each one for a person who reads only that comment, and possibly only its
 first line.
 
-Every comment is one of four kinds. The first line names the kind and gives
+Every comment is one of three kinds. The first line names the kind and gives
 the bottom line. The rest is a few plain sentences.
 
 | Kind | Post it when | The first line says | Then say |
 |---|---|---|---|
-| `**Progress:**` | A step of the work lands: a branch pushed, a change opened, a check passed | What is now true for the reader | What is next, when it is not obvious |
 | `**Decision:**` | You make a choice the item does not already settle | What was decided | Why, and what it changes |
 | `**Question:**` | You need an answer to continue, and asked the user | The question, so that it can be answered as it stands | What the answer changes, when that helps |
 | `**Blocked:**` | You stop on something you cannot resolve, such as a failed command or missing access | What is stopped, and what will start it again | What failed, and what is safe or lost |
@@ -149,8 +148,9 @@ Not this, which hides the result and reads like a form:
   every problem, then post it with `comment --on <id> --file -`. The
   adapter adds Cairn's marker. The check finds a missing kind, a labeled
   line, and a long sentence. The rest of this section is yours to follow.
-- **Do not narrate.** Reading, planning, and drafting are not progress.
-  Post when something changed that a collaborator would want to know.
+- **Do not post progress.** There is no progress comment. Commits, the
+  change, and closed items show the work as it happens. Cairn reports
+  progress once for each feature, in the feature-completed summary.
 
 Summaries with their own shape, such as the feature-completed summary and
 the architecture, are not checked as comments. Write them in the same
