@@ -419,7 +419,7 @@ function getItem({ exec = run, cwd, id } = {}) {
     ok: true,
     provider: PROVIDER,
     item: { ...toItem(i), kind: kindOf(i), state: i.state, body: i.body || '', images: imagesOf(i.body_html), parent: parent.ok ? String(parent.data.number) : null },
-    comments: comments.data.map((c) => ({ id: String(c.id), author: c.user && c.user.login, body: c.body, url: c.html_url, cairn: isCairn(c.body), images: imagesOf(c.body_html) })),
+    comments: comments.data.map((c) => ({ id: String(c.id), author: c.user && c.user.login, body: c.body, url: c.html_url, at: c.created_at, cairn: isCairn(c.body), images: imagesOf(c.body_html) })),
     children: children.data.map((c) => ({ id: String(c.number), title: c.title, kind: kindOf(c), state: c.state })),
     changes: changes.data,
   };
@@ -866,7 +866,7 @@ function ghFailed(r, what, notFound) {
   return providerError(what, r);
 }
 
-const REVIEW_QUERY = 'query($owner: String!, $name: String!, $number: Int!) { repository(owner: $owner, name: $name) { pullRequest(number: $number) { pending: reviews(states: PENDING, first: 1) { totalCount } reviews(states: [COMMENTED, APPROVED, CHANGES_REQUESTED, DISMISSED], first: 100) { nodes { databaseId author { login } state body bodyHTML url } } comments(first: 100) { nodes { databaseId author { login } body bodyHTML url } } reviewThreads(first: 100) { nodes { id isResolved isOutdated path line comments(first: 100) { nodes { databaseId author { login } body bodyHTML url } } } } } } }';
+const REVIEW_QUERY = 'query($owner: String!, $name: String!, $number: Int!) { repository(owner: $owner, name: $name) { pullRequest(number: $number) { pending: reviews(states: PENDING, first: 1) { totalCount } reviews(states: [COMMENTED, APPROVED, CHANGES_REQUESTED, DISMISSED], first: 100) { nodes { databaseId author { login } state body bodyHTML url submittedAt } } comments(first: 100) { nodes { databaseId author { login } body bodyHTML url createdAt } } reviewThreads(first: 100) { nodes { id isResolved isOutdated path line comments(first: 100) { nodes { databaseId author { login } body bodyHTML url createdAt } } } } } } }';
 
 // One comment in the contract's shape, from GraphQL. `body` is the
 // Markdown, which keeps Cairn's hidden marker; `bodyHTML` is GitHub's
@@ -877,6 +877,7 @@ function graphComment(c) {
     author: c.author && c.author.login,
     body: c.body,
     url: c.url,
+    at: c.createdAt || c.submittedAt || null,
     cairn: isCairn(c.body),
     images: imagesOf(c.bodyHTML),
   };
@@ -893,7 +894,7 @@ function getChange({ exec = run, cwd, id } = {}) {
   const ctx = { exec, cwd };
   const notFound = fail('TARGET_UNAVAILABLE', `Pull request #${id} was not found in ${repo}, or your gh account cannot see it.`, 'Check the change number.');
 
-  const fields = 'number,url,state,headRefName,closingIssuesReferences,statusCheckRollup,reviewDecision,mergeable,mergeStateStatus';
+  const fields = 'number,url,state,createdAt,headRefName,closingIssuesReferences,statusCheckRollup,reviewDecision,mergeable,mergeStateStatus';
   const view = exec('gh', ['pr', 'view', String(id), '--repo', repo, '--json', fields], { cwd });
   if (!view.ok) return ghFailed(view, `reading pull request #${id}`, notFound);
   const pr = JSON.parse(view.stdout);
@@ -923,6 +924,7 @@ function getChange({ exec = run, cwd, id } = {}) {
       url: pr.url,
       state: lower(pr.state),
       branch: pr.headRefName,
+      opened: pr.createdAt,
       closes: pr.closingIssuesReferences.map((i) => String(i.number)),
     },
     checks: checksOf(pr.statusCheckRollup),

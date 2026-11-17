@@ -137,3 +137,86 @@ test('next.js stays provider-neutral', () => {
   const source = fs.readFileSync(SCRIPT, 'utf8');
   assert.doesNotMatch(source, /github|gitlab|jira|azure|\bgh\b|pull request|issue/i);
 });
+
+// address-feedback: an open change with feedback Cairn has not answered.
+
+const T = (m) => `2026-03-01T10:${String(m).padStart(2, '0')}:00Z`;
+const withChange = (kind = 'feature') => ({ item: item(kind), children: [child('2')], changes: [{ id: '30', state: 'open' }] });
+const changeResult = (extra = {}) => ({ ok: true, change: { id: '30', state: 'open', opened: T(0) }, threads: [], comments: [], reviews: [], ...extra });
+const c = (author, m, cairn = false) => ({ author, at: T(m), cairn, body: cairn ? 'Done.\n\n<!-- cairn -->' : 'Hm.' });
+
+test('an open thread with a reviewer comment last gives address-feedback, for a feature and a task', () => {
+  const threads = [{ id: 'T1', resolved: false, outdated: false, comments: [c('rev', 5)] }];
+  for (const kind of ['feature', 'task', 'bug']) {
+    const r = nextStep(withChange(kind), changeResult({ threads }));
+    assert.equal(r.step, 'address-feedback', kind);
+    assert.match(r.reason, /^#30, the change for .* has 1 unanswered review thread\.$/);
+  }
+});
+
+test('a thread with Cairn\'s reply last, or resolved, keeps continue-change', () => {
+  const answered = [{ id: 'T1', resolved: false, comments: [c('rev', 5), c('octo', 6, true)] }];
+  assert.equal(nextStep(withChange(), changeResult({ threads: answered })).step, 'continue-change');
+  const resolved = [{ id: 'T1', resolved: true, outdated: true, comments: [c('rev', 5)] }];
+  assert.equal(nextStep(withChange(), changeResult({ threads: resolved })).step, 'continue-change');
+  const outdatedOpen = [{ id: 'T1', resolved: false, outdated: true, comments: [c('rev', 5)] }];
+  assert.equal(nextStep(withChange(), changeResult({ threads: outdatedOpen })).step, 'address-feedback', 'an outdated thread that is still open still counts');
+});
+
+test('a reviewer follow-up after Cairn\'s reply makes the thread unanswered again', () => {
+  const threads = [{ id: 'T1', resolved: false, comments: [c('rev', 5), c('octo', 6, true), c('rev', 7)] }];
+  assert.equal(nextStep(withChange(), changeResult({ threads })).step, 'address-feedback');
+});
+
+test('comments and review summaries on the change count until Cairn comments after them', () => {
+  const before = changeResult({ comments: [c('pm', 3)], reviews: [{ ...c('rev', 4), state: 'changes_requested' }] });
+  const r = nextStep(withChange(), before);
+  assert.equal(r.step, 'address-feedback');
+  assert.match(r.reason, /2 unanswered comments/);
+  const after = changeResult({ comments: [c('pm', 3), c('octo', 9, true)], reviews: [{ ...c('rev', 4), state: 'changes_requested' }] });
+  assert.equal(nextStep(withChange(), after).step, 'continue-change');
+});
+
+test('item comments count only after the change opened and after Cairn\'s last item comment', () => {
+  const state = (comments) => ({ ...withChange(), comments });
+  const opened = changeResult({ change: { id: '30', state: 'open', opened: T(10) } });
+  assert.equal(nextStep(state([c('pm', 5)]), opened).step, 'continue-change', 'planning talk before the change is not feedback');
+  assert.equal(nextStep(state([c('pm', 15)]), opened).step, 'address-feedback');
+  assert.equal(nextStep(state([c('pm', 15), c('octo', 16, true)]), opened).step, 'continue-change');
+});
+
+test('both kinds are named in the reason', () => {
+  const r = nextStep(withChange(), changeResult({ threads: [{ id: 'T1', resolved: false, comments: [c('rev', 5)] }, { id: 'T2', resolved: false, comments: [c('rev', 6)] }], comments: [c('pm', 7)] }));
+  assert.match(r.reason, /2 unanswered review threads and 1 unanswered comment\.$/);
+});
+
+test('without a change result, or for another change, routing is as before', () => {
+  const threads = [{ id: 'T1', resolved: false, comments: [c('rev', 5)] }];
+  assert.equal(nextStep(withChange()).step, 'continue-change');
+  const other = changeResult({ change: { id: '99', state: 'open', opened: T(0) }, threads });
+  assert.equal(nextStep(withChange(), other).step, 'continue-change');
+  assert.equal(nextStep({ item: item('feature'), children: [child('2')] }, changeResult({ threads })).step, 'work-on-child', 'no open change: the change result is not used');
+});
+
+test('CLI: --change reads a get-change result, and rejects bad input', () => {
+  const dir = fs.mkdtempSync(path.join(require('node:os').tmpdir(), 'cairn-next-'));
+  const itemFile = path.join(dir, 'item.json');
+  const changeFile = path.join(dir, 'change.json');
+  fs.writeFileSync(itemFile, JSON.stringify({ ok: true, ...withChange() }));
+  fs.writeFileSync(changeFile, JSON.stringify(changeResult({ threads: [{ id: 'T1', resolved: false, comments: [c('rev', 5)] }] })));
+  const run = (...args) => spawnSync(process.execPath, [SCRIPT, ...args], { encoding: 'utf8' });
+
+  const ok = run(itemFile, '--change', changeFile);
+  assert.equal(ok.status, 0, ok.stderr);
+  assert.equal(JSON.parse(ok.stdout).step, 'address-feedback');
+
+  fs.writeFileSync(changeFile, JSON.stringify({ ok: false, code: 'TARGET_UNAVAILABLE', message: 'm', fix: 'f' }));
+  const failed = run(itemFile, '--change', changeFile);
+  assert.equal(failed.status, 1);
+  assert.equal(JSON.parse(failed.stdout).code, 'TARGET_UNAVAILABLE');
+
+  fs.writeFileSync(changeFile, JSON.stringify({ ok: true }));
+  assert.equal(run(itemFile, '--change', changeFile).status, 2);
+  assert.equal(run(itemFile, '--change').status, 2);
+  assert.equal(run(itemFile, '--other', changeFile).status, 2);
+});

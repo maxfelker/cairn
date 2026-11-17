@@ -161,6 +161,10 @@ function renderHtml(body) {
   return `<p>${html.trim()}</p>`;
 }
 
+// A stable time for a seeded comment that has none: comment ids are in
+// the order comments were made, so times follow them.
+const timeOf = (c) => c.at || new Date(Date.UTC(2026, 0, 1) + Number(c.id) * 60000).toISOString();
+
 const pullUrl = (n) => `https://github.com/${state.repo}/pull/${n}`;
 
 function git(...args) {
@@ -329,6 +333,7 @@ if (group === 'pr') {
       number: pull.number,
       url: pullUrl(pull.number),
       state: pull.state,
+      createdAt: pull.opened || '2026-01-01T00:00:00.000Z',
       headRefName: pull.head,
       closingIssuesReferences: closesOf(pull).map((number) => ({ number })),
       statusCheckRollup: pull.checks || [],
@@ -419,10 +424,10 @@ if (group === 'api') {
         isOutdated: !!th.outdated,
         path: th.path || null,
         line: th.line === undefined ? null : th.line,
-        comments: { nodes: th.comments.map((c) => ({ databaseId: c.id, author: { login: c.author }, body: c.body, bodyHTML: renderHtml(c.body), url: `${pullUrl(pull.number)}#discussion_r${c.id}` })) },
+        comments: { nodes: th.comments.map((c) => ({ databaseId: c.id, author: { login: c.author }, body: c.body, bodyHTML: renderHtml(c.body), url: `${pullUrl(pull.number)}#discussion_r${c.id}`, createdAt: timeOf(c) })) },
       }));
-      const reviews = (pull.reviews || []).map((r) => ({ databaseId: r.id, author: { login: r.author }, state: r.state, body: r.body, bodyHTML: renderHtml(r.body), url: `${pullUrl(pull.number)}#pullrequestreview-${r.id}` }));
-      const comments = (pull.comments || []).map((c) => ({ databaseId: c.id, author: { login: c.author }, body: c.body, bodyHTML: renderHtml(c.body), url: `${pullUrl(pull.number)}#issuecomment-${c.id}` }));
+      const reviews = (pull.reviews || []).map((r) => ({ databaseId: r.id, author: { login: r.author }, state: r.state, body: r.body, bodyHTML: renderHtml(r.body), url: `${pullUrl(pull.number)}#pullrequestreview-${r.id}`, submittedAt: timeOf(r) }));
+      const comments = (pull.comments || []).map((c) => ({ databaseId: c.id, author: { login: c.author }, body: c.body, bodyHTML: renderHtml(c.body), url: `${pullUrl(pull.number)}#issuecomment-${c.id}`, createdAt: timeOf(c) }));
       json({ data: { repository: { pullRequest: { pending: { totalCount: pull.pendingReview ? 1 : 0 }, reviews: { nodes: reviews }, comments: { nodes: comments }, reviewThreads: { nodes } } } } });
     }
     unsupported('graphql query');
@@ -430,7 +435,7 @@ if (group === 'api') {
 
   const [pathPart, queryPart = ''] = opts.path.split('?');
   const query = Object.fromEntries(new URLSearchParams(queryPart));
-  const restComment = (issue, c) => ({ ...(opts.full ? { body_html: renderHtml(c.body) } : {}), id: c.id, body: c.body, user: { login: c.author }, html_url: `https://github.com/${state.repo}/issues/${issue.number}#issuecomment-${c.id}` });
+  const restComment = (issue, c) => ({ ...(opts.full ? { body_html: renderHtml(c.body) } : {}), id: c.id, body: c.body, user: { login: c.author }, html_url: `https://github.com/${state.repo}/issues/${issue.number}#issuecomment-${c.id}`, created_at: timeOf(c) });
 
   const compare = /^repos\/([^/]+\/[^/]+)\/compare\/([^.]+)\.\.\.(.+)$/.exec(pathPart);
   if (compare && opts.method === 'GET') {

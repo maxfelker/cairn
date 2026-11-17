@@ -916,7 +916,7 @@ test('get-change: a ready change with passing checks, an approval, and no thread
   assert.deepEqual(json, {
     ok: true,
     provider: 'github',
-    change: { id: '30', url: 'https://github.com/octo/repo/pull/30', state: 'open', branch: '8-zoom', closes: ['8'] },
+    change: { id: '30', url: 'https://github.com/octo/repo/pull/30', state: 'open', branch: '8-zoom', opened: '2026-01-01T00:00:00.000Z', closes: ['8'] },
     checks: { state: 'passed', runs: [{ name: 'test', state: 'passed' }, { name: 'ci/lint', state: 'passed' }] },
     review: { decision: 'approved', pending: false },
     mergeable: 'mergeable',
