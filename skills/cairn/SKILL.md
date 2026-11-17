@@ -528,8 +528,8 @@ These rules have no exceptions:
    change, add `--partial <name>`, so that the unit stays open when the
    change merges. Tell the user the branch.
    - `DIRTY_TREE`: stop. Show the user their uncommitted changes, and ask
-     what they want to do with them. Continue only after they have dealt
-     with them.
+     what they want to do with them. Do not offer to stash or move them
+     yourself. Continue only after the user has dealt with them.
 3. **Find where the work stands.** Read the commits on the branch that
    are not on `main` (`git log --oneline origin/main..HEAD`), and the
    unit's Decision and Blocked comments. A task whose work is already on
