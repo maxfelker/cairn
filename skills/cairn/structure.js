@@ -8,6 +8,7 @@
 //
 //   node structure.js <kind> <draft.md>   (use - to read the draft from stdin)
 //   node structure.js feature <draft.md> --for <who the epic is for>
+//   node structure.js comment <draft.md>   a comment has no "# <title>" line
 //   exit 0  {"ok": true, "kind": "...", "title": "..."}
 //   exit 1  {"ok": false, "kind": "...", "problems": ["..."]}
 //   exit 2  wrong usage
@@ -226,7 +227,62 @@ function checkEpic(text) {
     : { ok: true, kind: 'epic', title };
 }
 
-const CHECKS = { epic: checkEpic, feature: checkFeature, task: checkTask };
+// A comment is one of three kinds, named on its first line as
+// "**<Kind>:** <the bottom line>". The rest is plain prose: short sentences
+// and no labeled lines. A decision goes on to say why, and a blocker goes on
+// to say what is needed to continue.
+// Progress has no kind: it is reported once, by the feature-completed summary.
+const COMMENT_KINDS = ['Decision', 'Question', 'Blocked'];
+const COMMENT_NEEDS = {
+  Decision: 'After the first line, say why in a sentence or two.',
+  Blocked: 'After the first line, say what failed and what is needed to continue.',
+};
+const MAX_SENTENCE_WORDS = 25;
+
+// Sentences of a comment, for the length check. Code spans and links count
+// as one word each, and each list item is its own sentence.
+function sentences(text) {
+  return text
+    .replace(/`[^`]*`/g, 'code')
+    .replace(/\[([^\]]*)\]\([^)]*\)/g, '$1')
+    .split(/\n\s*\n|\n(?=\s*(?:[-*]|\d+\.)\s)|(?<=[.!?])\s+/)
+    .map((s) => s.replace(/\s+/g, ' ').trim())
+    .filter(Boolean);
+}
+
+function checkComment(text) {
+  const problems = [];
+  const lines = text.replace(/\r\n/g, '\n').split('\n');
+  const at = lines.findIndex((l) => l.trim() !== '');
+  const first = at === -1 ? '' : lines[at].trim();
+  const rest = at === -1 ? [] : lines.slice(at + 1);
+  const m = /^\*\*([A-Za-z]+):\*\*\s*(.*)$/.exec(first);
+  const kind = m && COMMENT_KINDS.find((k) => k.toLowerCase() === m[1].toLowerCase());
+
+  if (!m || !kind) {
+    problems.push(`Start the comment with its kind: "**<Kind>:** <the bottom line>", where the kind is ${COMMENT_KINDS.join(', ')}.`);
+  } else {
+    if (!m[2].trim()) problems.push(`Put the bottom line on the first line, after "**${kind}:**".`);
+    if (COMMENT_NEEDS[kind] && !rest.some((l) => l.trim() !== '')) {
+      problems.push(`A ${kind.toLowerCase()} needs more than its first line. ${COMMENT_NEEDS[kind]}`);
+    }
+    const label = rest.find((l) => /^\*\*[^*]+:\*\*/.test(l.trim()));
+    if (label) problems.push(`Write "${label.trim().slice(0, 40)}" as a sentence, not a labeled line. Only the kind on the first line is a label.`);
+    const body = [m[2], ...rest].join('\n');
+    for (const s of sentences(body)) {
+      const words = s.split(' ').length;
+      if (words > MAX_SENTENCE_WORDS) {
+        problems.push(`Split this sentence. It has ${words} words, and the limit is ${MAX_SENTENCE_WORDS}: "${s.slice(0, 60)}…"`);
+      }
+    }
+  }
+
+  return problems.length
+    ? { ok: false, kind: 'comment', problems }
+    : { ok: true, kind: 'comment', comment: kind.toLowerCase() };
+}
+
+const CHECKS = { epic: checkEpic, feature: checkFeature, task: checkTask, comment: checkComment };
 
 function main(argv) {
   const [kind, file, ...rest] = argv;
@@ -251,4 +307,4 @@ if (require.main === module) {
   process.exitCode = main(process.argv.slice(2));
 }
 
-module.exports = { parse, checkEpic, checkFeature, checkTask, criterionProblem, EPIC_SECTIONS, FEATURE_SECTIONS, TASK_SECTIONS };
+module.exports = { parse, checkEpic, checkFeature, checkTask, checkComment, COMMENT_KINDS, criterionProblem, EPIC_SECTIONS, FEATURE_SECTIONS, TASK_SECTIONS };

@@ -306,3 +306,63 @@ test('task: alternate headings are accepted', () => {
   const text = TASK.replace('## Implementation guidance', '## How').replace('## Validation', '## Testing').replace('## Done when', '## Definition of done');
   assert.equal(checkTask(text).ok, true);
 });
+
+// Comments
+
+const { checkComment } = require('../skills/cairn/structure.js');
+
+const commentProblems = (text) => {
+  const result = checkComment(text);
+  assert.equal(result.ok, false, `expected the comment to be rejected: ${text}`);
+  return result.problems.join('\n');
+};
+
+test('comment: each kind passes in its shape', () => {
+  const good = {
+    decision: '**Decision:** One camera module owns the view.\n\nPan and zoom must share one edge rule, and two modules would each need a copy of it.',
+    question: '**Question:** Should the minimap be its own feature?',
+    blocked: '**Blocked:** The branch cannot be pushed until the login has WRITE access.\n\nThe push was refused. A repository admin can grant the access.',
+  };
+  for (const [kind, text] of Object.entries(good)) {
+    assert.deepEqual(checkComment(text), { ok: true, kind: 'comment', comment: kind }, kind);
+  }
+  assert.equal(checkComment('\n\n**decision:** lower case kind.\n\nIt reads the same.').ok, true, 'the kind ignores case and leading blank lines');
+});
+
+test('comment: the first line names a known kind and gives the bottom line', () => {
+  assert.match(commentProblems('Pushed the camera module.'), /Start the comment with its kind/);
+  assert.match(commentProblems('**Note:** Pushed it.'), /Start the comment with its kind/);
+  assert.match(commentProblems('**Progress:** The camera module is pushed.'), /the kind is Decision, Question, Blocked/, 'progress is not a comment kind');
+  assert.match(commentProblems('**Question:**\n\nWhich zoom range?'), /Put the bottom line on the first line/);
+  assert.match(commentProblems(''), /Start the comment with its kind/);
+});
+
+test('comment: a decision says why, and a blocker says what is needed', () => {
+  assert.match(commentProblems('**Decision:** One camera module.'), /A decision needs more than its first line\. After the first line, say why/);
+  assert.match(commentProblems('**Blocked:** Push refused.\n\n'), /A blocked needs more than its first line\. .*what is needed to continue/);
+});
+
+test('comment: the body is prose, with no labeled lines', () => {
+  assert.match(commentProblems('**Decision:** One camera module.\n\n**Why:** it is simpler.'), /Write "\*\*Why:\*\* it is simpler\." as a sentence, not a labeled line/);
+  assert.match(commentProblems('**Blocked:** Push refused.\n\n**Needed:** WRITE access.'), /not a labeled line/);
+  assert.equal(checkComment('**Question:** Is the check required?\n\nThe **validate** job is green.').ok, true, 'bold inside a sentence is fine');
+});
+
+test('comment: a sentence has at most 25 words', () => {
+  const words = (n) => Array.from({ length: n }, () => 'word').join(' ');
+  assert.equal(checkComment(`**Question:** ${words(25)}.`).ok, true);
+  assert.match(commentProblems(`**Question:** ${words(26)}.`), /Split this sentence\. It has 26 words, and the limit is 25/);
+  assert.match(commentProblems(`**Question:** Is it pushed?\n\n${words(30)}. Short one.`), /It has 30 words/);
+  assert.equal(checkComment(`**Question:** Is it pushed?\n\n${words(20)}. ${words(20)}.`).ok, true, 'two short sentences pass');
+  assert.equal(checkComment(`**Question:** Is it pushed?\n\n- ${words(15)}\n- ${words(15)}`).ok, true, 'each list item is its own sentence');
+  assert.equal(checkComment(`**Question:** Is it pushed?\n\n${words(24)} \`${words(10)}\`.`).ok, true, 'a code span counts as one word');
+});
+
+test('comment: the CLI checks a comment with exit codes 0, 1, and 2', () => {
+  const run = (input, ...args) => spawnSync(process.execPath, [SCRIPT, 'comment', '-', ...args], { input, encoding: 'utf8' });
+  const ok = run('**Question:** Which zoom range?');
+  assert.equal(ok.status, 0);
+  assert.equal(JSON.parse(ok.stdout).comment, 'question');
+  assert.equal(run('Just text').status, 1);
+  assert.equal(run('**Question:** Which zoom range?', '--for', 'Players').status, 2, 'only features take --for');
+});

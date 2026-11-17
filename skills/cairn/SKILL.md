@@ -74,11 +74,87 @@ pre-approved permission matches. Each command prints one JSON object. If `ok` is
 `message` and `fix`. Use adapter commands for everything they cover. Do not
 improvise the provider's own commands for the same thing.
 
+When a failure stops work on an item and the user cannot fix it in this
+session, also post a `**Blocked:**` comment on the item (see Comments), so
+whoever picks it up next knows what is stopped and what will start it again. Skip this when the failure is that Cairn
+cannot reach or comment on the provider at all.
+
 **Check access before every change.** Before Cairn creates, labels, links,
 comments, pushes, or opens a change for review, run
 `access --for <action>` with the matching contract action. If it fails, stop
 before the change and tell the user the message and the fix. Never work
 around a failed check.
+
+## Comments
+
+Comments are how people who were not in the session follow the work. Write
+each one for a person who reads only that comment, and possibly only its
+first line.
+
+Every comment is one of three kinds. The first line names the kind and gives
+the bottom line. The rest is a few plain sentences.
+
+| Kind | Post it when | The first line says | Then say |
+|---|---|---|---|
+| `**Decision:**` | You make a choice the item does not already settle | What was decided | Why, and what it changes |
+| `**Question:**` | You need an answer to continue, and asked the user | The question, so that it can be answered as it stands | What the answer changes, when that helps |
+| `**Blocked:**` | You stop on something you cannot resolve, such as a failed command or missing access | What is stopped, and what will start it again | What failed, and what is safe or lost |
+
+**How to write one:**
+
+- **Bottom line first.** The first line is the conclusion. A reader who
+  stops there knows the result, and knows whether they must do something.
+- **Lead with the effect.** Say what the event means for the work or the
+  reader before you say how it happened. "The branch cannot be pushed until
+  the login has WRITE access" comes before the error text.
+- **Use simple, exact sentences.** One idea in each sentence, and no more
+  than 25 words. Use the active voice and the present or simple past tense.
+  Give the name, the number, or the command instead of "it" or "some".
+  Use one word for one thing all through the comment.
+- **Write prose, not a form.** Only the kind on the first line is a label.
+  Give reasons with "because" or in the next sentence. Do not add `**Why:**`
+  or `**Needed:**` lines.
+- **Use plain words.** No idioms, no jargon the item does not already use,
+  and no words that only make sense inside the session.
+- **Keep it small.** One point per comment, and a few sentences. Refer to
+  items and changes in the provider's short form.
+
+For example:
+
+```markdown
+**Decision:** A feature gets one change, and each task is a commit on its branch.
+
+The feature asks for one focused change that a reviewer can read from start to finish. One merge then closes the feature and all of its tasks.
+```
+
+```markdown
+**Blocked:** The branch cannot be pushed until the login has WRITE access to the repository.
+
+The push was refused because the login has READ access. A repository admin can grant WRITE access. The two commits are saved locally, so nothing is lost.
+```
+
+Not this, which hides the result and reads like a form:
+
+```markdown
+**Blocked:** Push failed.
+
+**Needed:** Access.
+```
+
+- **Where:** planning, decisions, questions, and blockers go on the work
+  item. Implementation review goes on the change. A decision about a
+  whole epic goes on the epic.
+- **Check, then post:** pipe the draft to `structure.js comment -`, fix
+  every problem, then post it with `comment --on <id> --file -`. The
+  adapter adds Cairn's marker. The check finds a missing kind, a labeled
+  line, and a long sentence. The rest of this section is yours to follow.
+- **Do not post progress.** There is no progress comment. Commits, the
+  change, and closed items show the work as it happens. Cairn reports
+  progress once for each feature, in the feature-completed summary.
+
+Summaries with their own shape, such as the feature-completed summary and
+the architecture, are not checked as comments. Write them in the same
+plain style.
 
 ## Setup check
 
