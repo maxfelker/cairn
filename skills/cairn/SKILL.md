@@ -22,6 +22,9 @@ allowed-tools:
   - Bash(node "${CLAUDE_SKILL_DIR}/next.js":*)
   - Bash(node "${CLAUDE_SKILL_DIR}/architecture.js":*)
   - Bash(node "${CLAUDE_SKILL_DIR}/providers/github.js":*)
+  - Bash(git status:*)
+  - Bash(git log:*)
+  - Bash(git diff:*)
 ---
 
 # Cairn
@@ -495,6 +498,88 @@ must reach the same step.
        to touch;
      - open questions, or anything the item leaves unclear.
 
-     Stop there and ask whether to proceed. Branch, commit, and change
-     conventions are not supported yet, so do not create branches or edit
-     files in this workflow.
+     Stop there and ask whether to proceed, unless the user already
+     asked you to build it. On a yes, run **Implement through a change**.
+
+### Implement through a change
+
+Run this for the `implement` and `continue-change` steps of **Work on an
+item**, once the user says to proceed. It takes the work from the item to a
+change that is ready for review. A new session that runs it again continues
+the same branch and the same change.
+
+These rules have no exceptions:
+
+- Never commit on `main`, and never push `main`.
+- Never force-push, and never rewrite commits that are pushed.
+- Never stash, discard, overwrite, or commit changes you did not make.
+- Never run git or the provider's own commands for something a change
+  command covers: `start-change`, `push-change`, and `save-change`.
+- Never merge. Merging needs the user's approval and is not supported yet.
+
+1. **Pick the unit.** The unit is the item the change is for.
+   - A task under a feature: the unit is the feature. A feature gets one
+     change, and each task is one or more commits on its branch.
+   - A task or bug with no parent: the unit is that item.
+   - When the user asked for only part of the unit, such as one task of a
+     feature, the change is **partial**. Choose a short name for it in
+     lowercase words joined by hyphens.
+2. **Start or resume.** Run `start-change --for <unit>`. For a partial
+   change, add `--partial <name>`, so that the unit stays open when the
+   change merges. Tell the user the branch.
+   - `DIRTY_TREE`: stop. Show the user their uncommitted changes, and ask
+     what they want to do with them. Continue only after they have dealt
+     with them.
+3. **Find where the work stands.** Read the commits on the branch that
+   are not on `main` (`git log --oneline origin/main..HEAD`), and the
+   unit's Decision and Blocked comments. A task whose work is already on
+   the branch is done. When you cannot tell from the commit messages, read
+   the diff. Do not build a task twice.
+4. **Build the tasks in order.** Take the unit's open children in the
+   order `get-item` lists them. For each one:
+   - Read it with `get-item`, and build what it asks for. Follow its
+     implementation guidance and its validation.
+   - Run the project's own checks, and fix what fails.
+   - Commit in steps that each make sense alone. Stage files by name, and
+     only files this work changed. Never stage everything.
+   - Write a commit message a person can read. The first line says what
+     changed, in plain words. After a blank line, say why, when the reason
+     is not obvious. End with the task on its own line, as
+     `For <reference>.` Do not put a closing word such as "closes" or
+     "fixes" before a reference in a commit message.
+   - Run `push-change` when the task is done, so the work is on the
+     provider before the next task starts. If the push is rejected, stop
+     and tell the user the message and the fix.
+5. **Record decisions, not steps.** Post a `**Decision:**` comment on the
+   unit for a choice the items do not settle. Do not post a comment for
+   each task. The pushed commits show the work.
+6. **Open the change.** When every task is built and the checks pass,
+   draft the description. The first line is `# <title>`, a short statement
+   of what the change does. Then use these sections, in the plain style of
+   **Comments**:
+
+   ```markdown
+   ## What changed
+   ## How it was validated
+   ## Trade-offs and follow-up
+   ```
+
+   Describe the change as it is. Do not copy the plan from the items. Do
+   not write the closing lines: the command adds them. Do not put a closing
+   word before a reference to an item that stays open.
+
+   Run `save-change --for <unit> --file -`. For a partial change, add
+   `--partial --closes <ids>`, with the ids of the tasks this change
+   finishes. The command opens the change, or updates the one that is
+   already open, and checks what the change will close.
+   - `CLOSES_MISMATCH`: the change is open, but it would close the wrong
+     items. Follow the `fix`. When the fix needs the provider's own page,
+     tell the user what to do there, and do not call the change ready.
+7. **Reply briefly** with the link to the change, what was validated, and
+   anything left open. The user reviews and merges it.
+
+For `continue-change`, the change is already open. Do steps 2 to 5, then
+run `save-change` again when the description no longer matches the work.
+
+When a failure stops the work and the user cannot fix it in this session,
+post a `**Blocked:**` comment on the unit, as **Comments** says.
