@@ -19,12 +19,16 @@ const CODES = [
   'FEATURE_DISABLED',
   'UNKNOWN_ACTION',
   'INVALID_DRAFT',
+  'DIRTY_TREE',
+  'NOT_ON_CHANGE',
+  'NOT_PUSHED',
+  'CLOSES_MISMATCH',
   'PROVIDER_ERROR',
 ];
 
 const ACTIONS = ['comment', 'create-item', 'label', 'link-child', 'push', 'propose-change'];
 
-const COMMANDS = ['target', 'auth', 'access', 'check', 'comment', 'find-item', 'get-item', 'list-items', 'order-children', 'save-item'];
+const COMMANDS = ['target', 'auth', 'access', 'check', 'comment', 'find-item', 'get-item', 'list-items', 'order-children', 'save-item', 'start-change', 'push-change', 'save-change'];
 
 const KINDS = ['epic', 'feature', 'task', 'bug'];
 
@@ -70,7 +74,9 @@ function gitRemote({ exec = run, cwd } = {}) {
     return fail('NO_REMOTE', 'This clone has no git remote.', 'git remote add origin <repository-url>');
   }
   const remote = remotes.includes('origin') ? 'origin' : remotes[0];
-  const url = exec('git', ['remote', 'get-url', remote], { cwd }).stdout.trim();
+  // Read the URL as configured. `git remote get-url` would apply the user's
+  // url.<base>.insteadOf rewrites, which can hide the provider's host.
+  const url = exec('git', ['config', '--get', `remote.${remote}.url`], { cwd }).stdout.trim();
   return { ok: true, remote, url };
 }
 
@@ -157,6 +163,31 @@ function flags(args, names) {
   return out;
 }
 
+// The branch every change starts from and is proposed into.
+const BASE = 'main';
+
+// Run git in the clone. Shared by the change commands of every provider
+// whose work lives in a git host.
+function git({ exec = run, cwd }, args) {
+  return exec('git', args, { cwd });
+}
+
+function currentBranch(ctx) {
+  return git(ctx, ['branch', '--show-current']).stdout.trim();
+}
+
+// The line of git's output that says what went wrong.
+function gitMessage(r) {
+  const lines = `${r.stderr}\n${r.stdout}`.split('\n').map((l) => l.trim()).filter(Boolean);
+  return lines.find((l) => /^(fatal|error):|\[rejected\]|\[remote rejected\]/.test(l)) || lines[0] || 'no details';
+}
+
+// Pause between reads of a value the provider computes a moment after a
+// write. Synchronous, because every command is.
+function sleep(ms) {
+  if (ms > 0) Atomics.wait(new Int32Array(new SharedArrayBuffer(4)), 0, 0, ms);
+}
+
 // Run an adapter's command table as a CLI. Each handler takes the remaining
 // argv and returns a result, or null for wrong usage.
 function cli(commands, argv, { stdout = process.stdout, stderr = process.stderr } = {}) {
@@ -172,4 +203,4 @@ function cli(commands, argv, { stdout = process.stdout, stderr = process.stderr 
   return result.ok ? 0 : 1;
 }
 
-module.exports = { CODES, ACTIONS, COMMANDS, KINDS, run, fail, gitRemote, readDraft, readBody, flags, cli, words, matchItems };
+module.exports = { CODES, ACTIONS, COMMANDS, KINDS, BASE, git, currentBranch, gitMessage, sleep, run, fail, gitRemote, readDraft, readBody, flags, cli, words, matchItems };

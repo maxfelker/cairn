@@ -604,3 +604,293 @@ test('architecture: a keyed comment posted on the epic reads back as current, an
   assert.deepEqual(after.uncovered.map((f) => f.id), ['4']);
   assert.equal(coversLine(after.features), after.covers);
 });
+
+// --- Changes: start-change, push-change, save-change ---
+
+const FEATURE_8 = { number: 8, title: 'Players can zoom', labels: ['feature'] };
+const TASKS_8 = [
+  { number: 21, title: 'Add the zoom keys', labels: ['task'], parent: 8 },
+  { number: 22, title: 'Clamp the zoom range', labels: ['task'], parent: 8 },
+  { number: 23, title: 'An old task', labels: ['task'], parent: 8, state: 'CLOSED' },
+];
+const changeRepo = (state = {}) => fakeGitHub({ issues: [FEATURE_8, ...TASKS_8, { number: 14, title: 'Another feature', labels: ['feature'] }], ...state });
+const branchOf = (gh) => gh.git('branch', '--show-current').trim();
+const remoteBranches = (gh) => gh.git('ls-remote', '--heads', 'origin').split('\n').filter(Boolean).map((l) => l.split('refs/heads/')[1]).sort();
+
+test('start-change: a first run creates a linked branch from the latest main', () => {
+  const gh = changeRepo();
+  // Someone else lands a commit on main after this clone last fetched.
+  const other = gh.other();
+  fs.writeFileSync(path.join(other.cwd, 'NEW.md'), 'new\n');
+  other.git('add', 'NEW.md');
+  other.git('commit', '-q', '-m', 'Land something on main');
+  other.git('push', '-q', 'origin', 'main');
+  const latest = other.git('rev-parse', 'HEAD').trim();
+
+  const { status, json } = gh.run('start-change', '--for', '8');
+  assert.equal(status, 0, JSON.stringify(json));
+  assert.deepEqual(json, { ok: true, provider: 'github', branch: '8-players-can-zoom', created: true, linked: true });
+  assert.equal(branchOf(gh), '8-players-can-zoom');
+  assert.equal(gh.git('rev-parse', 'HEAD').trim(), latest, 'the branch starts from the latest main');
+  assert.deepEqual(gh.state().linkedBranches, { 8: ['8-players-can-zoom'] });
+});
+
+test('start-change: a second run reuses the branch, from main or from a fresh clone', () => {
+  const gh = changeRepo();
+  gh.run('start-change', '--for', '8');
+  assert.deepEqual(gh.run('start-change', '--for', '8').json, { ok: true, provider: 'github', branch: '8-players-can-zoom', created: false, linked: true });
+
+  gh.git('checkout', '-q', 'main');
+  assert.equal(gh.run('start-change', '--for', '8').json.created, false);
+  assert.equal(branchOf(gh), '8-players-can-zoom');
+
+  // A clone that never had the branch finds it on the remote.
+  gh.git('checkout', '-q', 'main');
+  gh.git('branch', '-D', '8-players-can-zoom');
+  assert.equal(gh.run('start-change', '--for', '8').json.created, false);
+  assert.equal(branchOf(gh), '8-players-can-zoom');
+  assert.deepEqual(remoteBranches(gh), ['8-players-can-zoom', 'main'], 'never a second branch');
+  assert.equal(gh.state().calls.filter((c) => c[0] === 'issue' && c[1] === 'develop' && !c.includes('--list')).length, 1);
+});
+
+test('start-change: --partial creates a plain branch and links nothing', () => {
+  const gh = changeRepo();
+  const { status, json } = gh.run('start-change', '--for', '8', '--partial', 'zoom-keys');
+  assert.equal(status, 0, JSON.stringify(json));
+  assert.deepEqual(json, { ok: true, provider: 'github', branch: '8-zoom-keys', created: true, linked: false });
+  assert.equal(branchOf(gh), '8-zoom-keys');
+  assert.deepEqual(gh.state().linkedBranches, {});
+  assert.equal(gh.state().calls.some((c) => c[0] === 'issue'), false, 'no gh issue develop call');
+
+  gh.git('checkout', '-q', 'main');
+  assert.equal(gh.run('start-change', '--for', '8', '--partial', 'zoom-keys').json.created, false);
+  assert.equal(branchOf(gh), '8-zoom-keys');
+});
+
+test('start-change: a dirty tree on another branch fails with DIRTY_TREE and changes nothing', () => {
+  const gh = changeRepo();
+  fs.writeFileSync(path.join(gh.cwd, 'notes.txt'), 'mine\n');
+  fs.writeFileSync(path.join(gh.cwd, 'README.md'), '# repo\n\nedited\n');
+  const { status, json } = gh.run('start-change', '--for', '8');
+  assert.equal(status, 1);
+  assert.equal(json.code, 'DIRTY_TREE');
+  assert.match(json.fix, /Cairn does not stash or discard/);
+  assert.equal(branchOf(gh), 'main');
+  assert.equal(fs.readFileSync(path.join(gh.cwd, 'notes.txt'), 'utf8'), 'mine\n');
+  assert.match(fs.readFileSync(path.join(gh.cwd, 'README.md'), 'utf8'), /edited/);
+  assert.deepEqual(remoteBranches(gh), ['main']);
+  assert.equal(gh.git('stash', 'list'), '', 'nothing was stashed');
+  assert.equal(gh.gitCalls().some((c) => /^(stash|reset|clean|checkout|restore)\b/.test(c)), false);
+});
+
+test('start-change: a dirty tree on the item\'s own branch is allowed', () => {
+  const gh = changeRepo();
+  gh.run('start-change', '--for', '8');
+  fs.writeFileSync(path.join(gh.cwd, 'zoom.js'), '// in progress\n');
+  const { status, json } = gh.run('start-change', '--for', '8');
+  assert.equal(status, 0, JSON.stringify(json));
+  assert.equal(json.created, false);
+  assert.equal(fs.readFileSync(path.join(gh.cwd, 'zoom.js'), 'utf8'), '// in progress\n');
+});
+
+test('start-change: missing push access fails before any branch is made', () => {
+  const gh = changeRepo({ permission: 'TRIAGE' });
+  const { status, json } = gh.run('start-change', '--for', '8');
+  assert.equal(status, 1);
+  assert.equal(json.code, 'MISSING_PERMISSION');
+  assert.equal(branchOf(gh), 'main');
+  assert.deepEqual(remoteBranches(gh), ['main']);
+});
+
+test('start-change: an unknown item, a pull request, and wrong usage are refused', () => {
+  const gh = changeRepo({ issues: [FEATURE_8, { number: 30, title: 'A pull request', pull: true }] });
+  assert.equal(gh.run('start-change', '--for', '99').json.code, 'TARGET_UNAVAILABLE');
+  assert.equal(gh.run('start-change', '--for', '30').json.code, 'TARGET_UNAVAILABLE');
+  assert.equal(gh.run('start-change').status, 2);
+  assert.equal(gh.run('start-change', '--for', '8', '--partial', 'Not A Slug').status, 2);
+  assert.equal(branchOf(gh), 'main');
+});
+
+test('push-change: pushes new commits, then reports nothing new', () => {
+  const gh = changeRepo();
+  gh.run('start-change', '--for', '8', '--partial', 'zoom-keys');
+  gh.commit('zoom.js', '// zoom\n', 'Add the zoom keys');
+
+  const first = gh.run('push-change');
+  assert.equal(first.status, 0, JSON.stringify(first.json));
+  assert.deepEqual(first.json, { ok: true, provider: 'github', branch: '8-zoom-keys', pushed: true });
+  assert.equal(gh.git('ls-remote', '--heads', 'origin', '8-zoom-keys').split(/\s/)[0], gh.git('rev-parse', 'HEAD').trim());
+  assert.equal(gh.git('rev-parse', '--abbrev-ref', '@{upstream}').trim(), 'origin/8-zoom-keys', 'the upstream is set');
+
+  assert.deepEqual(gh.run('push-change').json, { ok: true, provider: 'github', branch: '8-zoom-keys', pushed: false });
+
+  gh.commit('zoom.js', '// zoom, clamped\n', 'Clamp the zoom range');
+  assert.equal(gh.run('push-change').json.pushed, true);
+});
+
+test('push-change: main is refused and nothing is pushed', () => {
+  const gh = changeRepo();
+  gh.commit('oops.js', '// oops\n', 'A commit on main');
+  const before = gh.git('ls-remote', '--heads', 'origin', 'main');
+  const { status, json } = gh.run('push-change');
+  assert.equal(status, 1);
+  assert.equal(json.code, 'NOT_ON_CHANGE');
+  assert.match(json.fix, /start-change/);
+  assert.equal(gh.git('ls-remote', '--heads', 'origin', 'main'), before);
+  assert.equal(gh.gitCalls().some((c) => c.startsWith('push')), false);
+  assert.equal(gh.run('push-change', '--force').status, 2, 'it takes no arguments');
+});
+
+test('push-change: a rejected push is reported, never forced', () => {
+  const gh = changeRepo();
+  gh.run('start-change', '--for', '8');
+  gh.commit('zoom.js', '// mine\n', 'My commit');
+
+  // Someone else pushes to the same branch first.
+  const other = gh.other();
+  other.git('checkout', '-q', '-b', '8-players-can-zoom', 'origin/8-players-can-zoom');
+  fs.writeFileSync(path.join(other.cwd, 'theirs.js'), '// theirs\n');
+  other.git('add', 'theirs.js');
+  other.git('commit', '-q', '-m', 'Their commit');
+  other.git('push', '-q', 'origin', '8-players-can-zoom');
+  const theirs = other.git('rev-parse', 'HEAD').trim();
+
+  const { status, json } = gh.run('push-change');
+  assert.equal(status, 1);
+  assert.equal(json.code, 'PROVIDER_ERROR');
+  assert.match(json.message, /rejected/);
+  assert.match(json.fix, /Pull them into the branch first.*never force-pushes/);
+  assert.equal(gh.git('ls-remote', '--heads', 'origin', '8-players-can-zoom').split(/\s/)[0], theirs, 'the remote branch is unchanged');
+});
+
+test('push-change: no git call uses force, and missing access pushes nothing', () => {
+  const gh = changeRepo();
+  gh.run('start-change', '--for', '8');
+  gh.commit('zoom.js', '// zoom\n', 'Add zoom');
+  gh.run('push-change');
+  gh.run('push-change');
+  const pushes = gh.gitCalls().filter((c) => c.startsWith('push'));
+  assert.ok(pushes.length > 0);
+  for (const call of gh.gitCalls()) assert.doesNotMatch(call, /(^|\s)(--force\S*|-f|\+\S+)(\s|$)/, call);
+
+  const readOnly = changeRepo({ permission: 'READ' });
+  readOnly.git('checkout', '-q', '-b', 'some-branch');
+  assert.equal(readOnly.run('push-change').json.code, 'MISSING_PERMISSION');
+  assert.equal(readOnly.gitCalls().some((c) => c.startsWith('push')), false);
+});
+
+const CHANGE = `# Let players zoom the map
+
+## What changed
+
+Players can zoom with the plus and minus keys.
+
+## How it was validated
+
+The unit tests pass.
+`;
+
+// A pushed branch for #8 with one commit, ready for save-change.
+function pushedChange(state, ...startArgs) {
+  const gh = changeRepo(state);
+  gh.run('start-change', '--for', '8', ...startArgs);
+  gh.commit('zoom.js', '// zoom\n', 'Add zoom');
+  gh.run('push-change');
+  return gh;
+}
+
+test('save-change: a first run opens one change that closes the item and its open tasks', () => {
+  const gh = pushedChange();
+  const { status, json } = gh.run('save-change', '--for', '8', '--file', gh.draft('change.md', CHANGE));
+  assert.equal(status, 0, JSON.stringify(json));
+  assert.deepEqual(json, {
+    ok: true, provider: 'github', change: { id: '24', url: 'https://github.com/octo/repo/pull/24' }, created: true, closes: ['8', '21', '22'],
+  });
+  const [pull] = gh.state().pulls;
+  assert.equal(pull.title, 'Let players zoom the map');
+  assert.equal(pull.base, 'main');
+  assert.equal(pull.head, '8-players-can-zoom');
+  assert.match(pull.body, /^## What changed/);
+  assert.ok(pull.body.endsWith('The unit tests pass.\n\nCloses #8\nCloses #21\nCloses #22\n'), pull.body);
+  assert.doesNotMatch(pull.body, /#23/, 'a closed task is not closed again');
+
+  // get-item now reports the open change, which is how a fresh session finds it.
+  assert.deepEqual(gh.run('get-item', '--id', '8').json.changes, [{ id: '24', url: 'https://github.com/octo/repo/pull/24', state: 'open' }]);
+});
+
+test('save-change: a second run updates the change, with no second change and no doubled links', () => {
+  const gh = pushedChange();
+  gh.run('save-change', '--for', '8', '--file', gh.draft('change.md', CHANGE));
+  const again = gh.state().pulls[0].body.replace('The unit tests pass.', 'The unit and integration tests pass.');
+  const { status, json } = gh.run('save-change', '--for', '8', '--file', gh.draft('change2.md', `# Let players zoom the map smoothly\n\n${again}`));
+  assert.equal(status, 0, JSON.stringify(json));
+  assert.equal(json.created, false);
+  assert.equal(json.change.id, '24');
+  const { pulls } = gh.state();
+  assert.equal(pulls.length, 1);
+  assert.equal(pulls[0].title, 'Let players zoom the map smoothly');
+  assert.ok(pulls[0].body.endsWith('The unit and integration tests pass.\n\nCloses #8\nCloses #21\nCloses #22\n'), pulls[0].body);
+  assert.equal(pulls[0].body.match(/Closes #8\b/g).length, 1);
+});
+
+test('save-change: --partial writes Part of for the item and closes only the listed ids', () => {
+  const gh = pushedChange({}, '--partial', 'zoom-keys');
+  const { status, json } = gh.run('save-change', '--for', '8', '--file', gh.draft('change.md', CHANGE), '--partial', '--closes', '21');
+  assert.equal(status, 0, JSON.stringify(json));
+  assert.deepEqual(json.closes, ['21']);
+  assert.ok(gh.state().pulls[0].body.endsWith('The unit tests pass.\n\nPart of #8.\n\nCloses #21\n'), gh.state().pulls[0].body);
+  assert.deepEqual(gh.run('get-item', '--id', '8').json.changes, [], 'the feature is not closed by a partial change');
+
+  const none = pushedChange({}, '--partial', 'notes');
+  const r = none.run('save-change', '--for', '8', '--file', none.draft('change.md', CHANGE), '--partial');
+  assert.equal(r.status, 0, JSON.stringify(r.json));
+  assert.deepEqual(r.json.closes, []);
+  assert.ok(none.state().pulls[0].body.endsWith('The unit tests pass.\n\nPart of #8.\n'));
+});
+
+test('save-change: a change that would close an item not asked for fails and names it', () => {
+  // A linked branch: the #66 mistake. The branch is linked to #8, but the change is a slice.
+  const linked = pushedChange();
+  const a = linked.run('save-change', '--for', '8', '--file', linked.draft('change.md', CHANGE), '--partial', '--closes', '21');
+  assert.equal(a.status, 1);
+  assert.equal(a.json.code, 'CLOSES_MISMATCH');
+  assert.match(a.json.message, /would also close #8/);
+  assert.match(a.json.fix, /under Development/);
+  assert.deepEqual(a.json.closes, ['8', '21']);
+  assert.equal(a.json.change.id, '24', 'the change is named, so it can be fixed');
+
+  // A closing word in the prose: the #72 mistake.
+  const prose = pushedChange({}, '--partial', 'zoom-keys');
+  const b = prose.run('save-change', '--for', '8', '--file', prose.draft('change.md', `${CHANGE}\nMerging the old branch would have closed #14 too early.\n`), '--partial', '--closes', '21');
+  assert.equal(b.status, 1);
+  assert.equal(b.json.code, 'CLOSES_MISMATCH');
+  assert.match(b.json.message, /would also close #14/);
+
+  // An id that is not an issue here cannot be closed.
+  const missing = pushedChange({}, '--partial', 'zoom-keys');
+  const c = missing.run('save-change', '--for', '8', '--file', missing.draft('change.md', CHANGE), '--partial', '--closes', '21,99');
+  assert.equal(c.json.code, 'CLOSES_MISMATCH');
+  assert.match(c.json.message, /would not close #99/);
+});
+
+test('save-change: an unpushed branch, main, and missing access are refused before anything is opened', () => {
+  const unpushed = changeRepo();
+  unpushed.run('start-change', '--for', '8', '--partial', 'zoom-keys');
+  const a = unpushed.run('save-change', '--for', '8', '--file', unpushed.draft('change.md', CHANGE));
+  assert.equal(a.json.code, 'NOT_PUSHED');
+  assert.match(a.json.fix, /push-change/);
+
+  const onMain = changeRepo();
+  assert.equal(onMain.run('save-change', '--for', '8', '--file', onMain.draft('change.md', CHANGE)).json.code, 'NOT_ON_CHANGE');
+
+  const readOnly = pushedChange();
+  fs.writeFileSync(path.join(readOnly.root, 'github.json'), JSON.stringify({ ...readOnly.state(), permission: 'TRIAGE' }));
+  assert.equal(readOnly.run('save-change', '--for', '8', '--file', readOnly.draft('change.md', CHANGE)).json.code, 'MISSING_PERMISSION');
+
+  for (const gh of [unpushed, onMain, readOnly]) {
+    assert.equal(gh.state().pulls.length, 0);
+    assert.equal(gh.state().calls.some((c) => c[0] === 'pr'), false);
+  }
+  assert.equal(onMain.run('save-change', '--for', '8', '--file', 'x.md', '--closes', '21').status, 2, '--closes needs --partial');
+  assert.equal(onMain.run('save-change', '--for', '8', '--file', onMain.draft('bad.md', 'No title\n')).json.code, 'INVALID_DRAFT');
+});

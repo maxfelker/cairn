@@ -43,6 +43,9 @@ Run each one as `node "${CLAUDE_SKILL_DIR}/providers/github.js" <command>`.
 | `list-items --kind <kind>` | `gh api` issues by type or label | |
 | `order-children --parent <n> --ids <n,n>` | `gh api` sub-issue reprioritize | Moves only what is out of place |
 | `save-item --kind <kind> --file - [--parent <n>]` | `gh api` create or update, and sub-issue link | |
+| `start-change --for <n> [--partial <name>]` | `gh issue develop`, `git fetch`, `git checkout` | The linked branch gets GitHub's own name. A partial branch is `<n>-<name>` |
+| `push-change` | `git ls-remote`, `git push -u origin HEAD` | No force flag, ever |
+| `save-change --for <n> --file - [--partial [--closes <n,n>]]` | `gh pr list`, `gh pr create` or `gh pr edit`, `gh pr view` | Ends the description with `Closes #n` lines, or `Part of #n.` |
 
 How contract actions map to GitHub repository roles:
 
@@ -52,6 +55,23 @@ How contract actions map to GitHub repository roles:
 | `create-item` | READ | Issues turned on |
 | `label`, `link-child` | TRIAGE | Issues turned on |
 | `push`, `propose-change` | WRITE | |
+
+## Changes
+
+- A change is a pull request into `main`.
+- **A linked branch closes its issue.** A branch made with
+  `gh issue develop` shows under Development on the issue, and GitHub then
+  treats the pull request from it as closing that issue. Only the pull
+  request's own page can remove that link. That is why `start-change`
+  takes `--partial` for a change that delivers part of an issue.
+- **A closing word in the description closes an issue too.** GitHub reads
+  "closes", "fixes", or "resolves" (and "closed", "fixed", "resolved")
+  before `#n` anywhere in the description, even in the middle of a
+  sentence. Never write one before an issue that must stay open. Say
+  "the parent feature" or "Part of #n" instead. `save-change` fails with
+  `CLOSES_MISMATCH` when this happens.
+- GitHub works out the closing links a moment after the description is
+  saved, so `save-change` reads them up to three times.
 
 Branch protection and required reviews can still block a push or merge,
 even with the role. Report those errors as GitHub returns them, and never
