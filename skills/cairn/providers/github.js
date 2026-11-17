@@ -945,6 +945,55 @@ function getChange({ exec = run, cwd, id } = {}) {
   };
 }
 
+const THREAD_QUERY = 'query($id: ID!) { node(id: $id) { ... on PullRequestReviewThread { id isResolved pullRequest { number repository { nameWithOwner } } comments(last: 1) { nodes { databaseId url body } } } } }';
+const REPLY_MUTATION = 'mutation($id: ID!, $body: String!) { addPullRequestReviewThreadReply(input: { pullRequestReviewThreadId: $id, body: $body }) { comment { databaseId url } } }';
+
+// Reply inside one review thread, so the answer stays next to the feedback.
+// The reply ends with Cairn's marker, which is how a later run knows the
+// thread is answered. It never resolves the thread or dismisses a review:
+// that stays with the reviewer. Sending the same reply twice posts it once.
+function reply({ exec = run, cwd, thread, file } = {}) {
+  const body = readBody(file);
+  if (!body.ok) return body;
+
+  const t = target({ exec, cwd });
+  if (!t.ok) return t;
+  const repo = t.target;
+  const ctx = { exec, cwd };
+
+  const a = access({ exec, cwd, repo, action: 'comment' });
+  if (!a.ok) return a;
+
+  // Read the thread first: it must be a review thread in this repository.
+  const notFound = fail('TARGET_UNAVAILABLE', `Review thread ${thread} was not found in ${repo}.`, 'Use a thread id from get-change.');
+  const found = api(ctx, ['graphql', '-f', `query=${THREAD_QUERY}`, '-f', `id=${thread}`]);
+  if (!found.ok) {
+    if (found.result) return found.result;
+    if (/Could not resolve to a node/.test(found.r.stderr)) return notFound;
+    return failed(found, `reading review thread ${thread}`);
+  }
+  const th = found.data.data.node;
+  if (!th || !th.pullRequest || th.pullRequest.repository.nameWithOwner.toLowerCase() !== repo.toLowerCase()) return notFound;
+
+  const text = `${body.text}\n\n${marker()}`;
+  const toComment = (c) => ({ id: String(c.databaseId), url: c.url });
+  const last = th.comments.nodes[0];
+  if (last && last.body === text) {
+    return { ok: true, provider: PROVIDER, comment: toComment(last), change: String(th.pullRequest.number), created: false };
+  }
+
+  const res = api(ctx, ['graphql', '-f', `query=${REPLY_MUTATION}`, '-f', `id=${thread}`, '-f', `body=${text}`]);
+  if (!res.ok) return failed(res, `replying in review thread ${thread}`);
+  const c = res.data.data.addPullRequestReviewThreadReply.comment;
+  return { ok: true, provider: PROVIDER, comment: toComment(c), change: String(th.pullRequest.number), created: true };
+}
+
+function replyArgs(args) {
+  const f = flags(args, ['on', 'file']);
+  if (!f || !/^[A-Za-z0-9_=-]+$/.test(f.on || '') || !f.file) return null;
+  return reply({ thread: f.on, file: f.file });
+}
+
 // --- Images attached to items and comments ---
 
 // The media type that adds `body_html` to REST results. GitHub's rendering
@@ -1133,10 +1182,11 @@ const commands = {
   'save-change': saveChangeArgs,
   'get-change': getChangeArgs,
   'get-image': getImageArgs,
+  reply: replyArgs,
 };
 
 if (require.main === module) {
   process.exitCode = cli(commands, process.argv.slice(2));
 }
 
-module.exports = { name: PROVIDER, commands, marker, comment, actions: ACTIONS, kinds: KIND_LABELS, parseRemote, target, auth, access, check, findItem, getItem, listItems, orderChildren, saveItem, startChange, pushChange, saveChange, getChange, getImage, imagesOf, isCairn, checksOf, withLinks };
+module.exports = { name: PROVIDER, commands, marker, comment, actions: ACTIONS, kinds: KIND_LABELS, parseRemote, target, auth, access, check, findItem, getItem, listItems, orderChildren, saveItem, startChange, pushChange, saveChange, getChange, getImage, reply, imagesOf, isCairn, checksOf, withLinks };

@@ -353,6 +353,30 @@ if (group === 'api') {
         .map((p) => ({ number: p.number, url: `https://github.com/${state.repo}/pull/${p.number}`, state: p.state }));
       json({ data: { repository: { issue: { closedByPullRequestsReferences: { nodes } } } } });
     }
+    // One review thread by its global id, and a reply in it.
+    const threadById = (id) => {
+      for (const pull of state.pulls) {
+        const th = (pull.threads || []).find((x) => x.id === id);
+        if (th) return { pull, th };
+      }
+      return null;
+    };
+    const threadComment = (pull, c) => ({ databaseId: c.id, url: `${pullUrl(pull.number)}#discussion_r${c.id}`, body: c.body });
+    if (/PullRequestReviewThread/.test(q) && /node\(id/.test(q)) {
+      const found = threadById(opts.fields.id);
+      if (!found) done('', 1, `gh: Could not resolve to a node with the global id of '${opts.fields.id}'.\n`);
+      const { pull, th } = found;
+      json({ data: { node: { id: th.id, isResolved: !!th.resolved, pullRequest: { number: pull.number, repository: { nameWithOwner: pull.repo || state.repo } }, comments: { nodes: th.comments.slice(-1).map((c) => threadComment(pull, c)) } } } });
+    }
+    if (/addPullRequestReviewThreadReply/.test(q)) {
+      const found = threadById(opts.fields.id);
+      if (!found) done('', 1, `gh: Could not resolve to a node with the global id of '${opts.fields.id}'.\n`);
+      const { pull, th } = found;
+      const c = { id: state.nextCommentId++, author: state.login, body: opts.fields.body };
+      th.comments.push(c);
+      json({ data: { addPullRequestReviewThreadReply: { comment: threadComment(pull, c) } } });
+    }
+    if (/resolveReviewThread|dismissPullRequestReview/.test(q)) unsupported('graphql mutation that Cairn must never run');
     if (/reviewThreads/.test(q)) {
       requireRepo(`${opts.fields.owner}/${opts.fields.name}`);
       const pull = state.pulls.find((p) => p.number === Number(opts.fields.number));

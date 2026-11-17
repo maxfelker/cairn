@@ -37,6 +37,7 @@ contract. A new provider is done when it passes.
 | `save-change --for <id> --file <draft> [--partial [--closes <id,id,…>]]` | Put the current branch up for review: open its change, or update the one already open. The command ends the description with the closing references, then checks what the provider will close | `change` (`id`, `url`), `created`, `closes` (the ids it closes on merge) |
 | `get-change --id <change>` | Where does this change stand in review? Reads only | `change` (`id`, `url`, `state`: `open`, `merged`, or `closed`, `branch`, `closes`), `checks` (`state`: `passed`, `failed`, `pending`, or `none`, and `runs`, each `name` and `state`), `review` (`decision`: the provider's review verdict or null, `pending`: true when the user has a review not yet submitted), `mergeable`, `mergeState`, `behind` (commits on `main` the branch lacks, or null when the change is not open), `reviews` (submitted reviews with a summary: a comment plus `state`), `comments` (the change's conversation), `threads` (`id`, `resolved`, `outdated`, `path`, `line`, `comments`). Every comment has `id`, `author`, `body`, `url`, `cairn` (true when Cairn wrote it), and `images` |
 | `get-image --url <url> --out <folder>` | Let me look at an image attached to an item or a change. Downloads one URL from an `images` list into a folder outside the repository | `path`, `type`, `bytes` |
+| `reply --on <thread> --file <text\|->` | Answer one review thread as Cairn, in the thread. Never resolves it. Sending the same reply again posts nothing | `comment` (`id`, `url`), `change`, `created` |
 
 Add a command here only when a feature first needs it. Then add it to every
 provider.
@@ -76,6 +77,11 @@ that protect other people's work in code:
 
 `save-change` checks access for `propose-change`, and the other two check
 `push`, before they change anything.
+
+**Review stays with the reviewer.** `reply` answers in a thread with
+Cairn's marker, and checks access for `comment`. No command resolves a
+thread or dismisses a review. Feedback outside a thread is answered with
+`comment` on the change.
 
 ## Images
 

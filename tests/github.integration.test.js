@@ -1128,3 +1128,60 @@ test('get-image: an expired link, a page that is not an image, and a host that i
   assert.equal(plain.json.code, 'NOT_THIS_PROVIDER', 'only https from GitHub');
   assert.equal(gh.run('get-image', '--url', 'x').status, 2);
 });
+
+// reply: an answer inside one review thread.
+
+function withThread(extra = {}) {
+  return changeFor({
+    threads: [{ id: 'PRRT_1', path: 'zoom.js', line: 12, comments: [{ id: 503, author: 'rev', body: 'Clamp the zoom?' }] }],
+    ...extra,
+  });
+}
+
+test('reply: posts one marked reply in the thread, and leaves it unresolved', () => {
+  const gh = withThread();
+  const { status, json } = gh.run('reply', '--on', 'PRRT_1', '--file', gh.draft('r.md', 'Clamped to 1–8 in abc123. The zoom test covers both ends.\n'));
+  assert.equal(status, 0, JSON.stringify(json));
+  assert.equal(json.created, true);
+  assert.equal(json.change, '30');
+  assert.match(json.comment.url, /\/pull\/30#discussion_r\d+$/);
+
+  const th = gh.state().pulls[0].threads[0];
+  assert.equal(th.comments.length, 2);
+  assert.equal(th.comments[1].body, 'Clamped to 1–8 in abc123. The zoom test covers both ends.\n\n<!-- cairn -->');
+  assert.ok(!th.resolved, 'the thread stays unresolved');
+
+  const read = gh.run('get-change', '--id', '30').json.threads[0];
+  assert.equal(read.resolved, false);
+  assert.equal(read.comments[1].cairn, true, 'get-change sees the reply as Cairn\'s');
+});
+
+test('reply: the same reply twice is posted once', () => {
+  const gh = withThread();
+  const draft = gh.draft('r.md', 'Done.\n');
+  gh.run('reply', '--on', 'PRRT_1', '--file', draft);
+  const { json } = gh.run('reply', '--on', 'PRRT_1', '--file', draft);
+  assert.equal(json.created, false);
+  assert.equal(gh.state().pulls[0].threads[0].comments.length, 2);
+});
+
+test('reply: an unknown thread and a thread in another repository are refused', () => {
+  const gh = withThread();
+  const draft = gh.draft('r.md', 'Done.\n');
+  assert.equal(gh.run('reply', '--on', 'PRRT_404', '--file', draft).json.code, 'TARGET_UNAVAILABLE');
+
+  const other = changeFor({ repo: 'someone/else', threads: [{ id: 'PRRT_9', comments: [{ id: 1, author: 'x', body: 'Hi' }] }] });
+  const r = other.run('reply', '--on', 'PRRT_9', '--file', other.draft('r.md', 'Done.\n'));
+  assert.equal(r.json.code, 'TARGET_UNAVAILABLE');
+  assert.equal(other.state().pulls[0].threads[0].comments.length, 1, 'nothing is posted');
+});
+
+test('reply: an empty reply and wrong usage post nothing, and nothing resolves or dismisses', () => {
+  const gh = withThread({});
+  const empty = gh.run('reply', '--on', 'PRRT_1', '--file', gh.draft('e.md', '  \n'));
+  assert.equal(empty.json.code, 'INVALID_DRAFT');
+  assert.equal(gh.run('reply', '--on', 'PRRT_1').status, 2);
+  assert.equal(gh.run('reply', '--on', 'bad id', '--file', 'x').status, 2);
+  assert.equal(gh.state().pulls[0].threads[0].comments.length, 1);
+  assert.equal(gh.state().calls.filter((c) => c.some((a) => /resolveReviewThread|dismissPullRequestReview/.test(a))).length, 0, 'nothing resolves or dismisses');
+});

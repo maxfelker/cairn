@@ -48,6 +48,7 @@ Run each one as `node "${CLAUDE_SKILL_DIR}/providers/github.js" <command>`.
 | `save-change --for <n> --file - [--partial [--closes <n,n>]]` | `gh pr list`, `gh pr create` or `gh pr edit`, `gh pr view` | Ends the description with `Closes #n` lines, or `Part of #n.` |
 | `get-change --id <n>` | `gh pr view --json`, GraphQL review threads and pending review, `gh api` compare with `main` | `decision`, `mergeable`, and `mergeState` are GitHub's values in lowercase, such as `changes_requested` and `behind` |
 | `get-image --url <url> --out <folder>` | Node `fetch` in a child process, with no token | Only `https` URLs on `*.githubusercontent.com` or `github.com/user-attachments` |
+| `reply --on <thread> --file -` | GraphQL `node` read, then `addPullRequestReviewThreadReply` | The thread id is the `PRRT_…` id from `get-change`, and must be in this repository. Answer a pull request's conversation with `comment --on <n>` |
 
 How contract actions map to GitHub repository roles:
 
