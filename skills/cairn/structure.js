@@ -228,30 +228,51 @@ function checkEpic(text) {
 }
 
 // A comment is one of four kinds, named on its first line as
-// "**<Kind>:** <one line>". A decision says why, and a blocker says what is
-// needed to continue, each on its own labeled line.
+// "**<Kind>:** <the bottom line>". The rest is plain prose: short sentences
+// and no labeled lines. A decision goes on to say why, and a blocker goes on
+// to say what is needed to continue.
 const COMMENT_KINDS = ['Progress', 'Decision', 'Question', 'Blocked'];
 const COMMENT_NEEDS = {
-  Decision: { label: 'Why', hint: 'Say why on its own line, as "**Why:** …".' },
-  Blocked: { label: 'Needed', hint: 'Say what is needed to continue on its own line, as "**Needed:** …".' },
+  Decision: 'After the first line, say why in a sentence or two.',
+  Blocked: 'After the first line, say what failed and what is needed to continue.',
 };
+const MAX_SENTENCE_WORDS = 25;
+
+// Sentences of a comment, for the length check. Code spans and links count
+// as one word each, and each list item is its own sentence.
+function sentences(text) {
+  return text
+    .replace(/`[^`]*`/g, 'code')
+    .replace(/\[([^\]]*)\]\([^)]*\)/g, '$1')
+    .split(/\n\s*\n|\n(?=\s*(?:[-*]|\d+\.)\s)|(?<=[.!?])\s+/)
+    .map((s) => s.replace(/\s+/g, ' ').trim())
+    .filter(Boolean);
+}
 
 function checkComment(text) {
   const problems = [];
   const lines = text.replace(/\r\n/g, '\n').split('\n');
-  const first = lines.find((l) => l.trim() !== '') || '';
-  const m = /^\*\*([A-Za-z]+):\*\*\s*(.*)$/.exec(first.trim());
+  const at = lines.findIndex((l) => l.trim() !== '');
+  const first = at === -1 ? '' : lines[at].trim();
+  const rest = at === -1 ? [] : lines.slice(at + 1);
+  const m = /^\*\*([A-Za-z]+):\*\*\s*(.*)$/.exec(first);
   const kind = m && COMMENT_KINDS.find((k) => k.toLowerCase() === m[1].toLowerCase());
 
   if (!m || !kind) {
-    problems.push(`Start the comment with its kind: "**<Kind>:** <one line>", where the kind is ${COMMENT_KINDS.join(', ')}.`);
+    problems.push(`Start the comment with its kind: "**<Kind>:** <the bottom line>", where the kind is ${COMMENT_KINDS.join(', ')}.`);
   } else {
-    if (!m[2].trim()) problems.push(`Say what the ${kind.toLowerCase()} is on the first line, after "**${kind}:**".`);
-    const need = COMMENT_NEEDS[kind];
-    if (need) {
-      const label = new RegExp(`^\\*{0,2}${need.label}:\\*{0,2}`, 'i');
-      const said = lines.some((l) => label.test(l.trim()) && l.trim().replace(label, '').trim() !== '');
-      if (!said) problems.push(`A ${kind.toLowerCase()} needs a "${need.label}" line. ${need.hint}`);
+    if (!m[2].trim()) problems.push(`Put the bottom line on the first line, after "**${kind}:**".`);
+    if (COMMENT_NEEDS[kind] && !rest.some((l) => l.trim() !== '')) {
+      problems.push(`A ${kind.toLowerCase()} needs more than its first line. ${COMMENT_NEEDS[kind]}`);
+    }
+    const label = rest.find((l) => /^\*\*[^*]+:\*\*/.test(l.trim()));
+    if (label) problems.push(`Write "${label.trim().slice(0, 40)}" as a sentence, not a labeled line. Only the kind on the first line is a label.`);
+    const body = [m[2], ...rest].join('\n');
+    for (const s of sentences(body)) {
+      const words = s.split(' ').length;
+      if (words > MAX_SENTENCE_WORDS) {
+        problems.push(`Split this sentence. It has ${words} words, and the limit is ${MAX_SENTENCE_WORDS}: "${s.slice(0, 60)}…"`);
+      }
     }
   }
 
