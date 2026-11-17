@@ -13,10 +13,11 @@
 //   done            the item is closed
 //   break-down      an epic with no features, or a feature with no tasks
 //   architect       an epic with open features and no current architecture
-//   work-on-child   an epic or feature with open children: the first, in order
+//   work-on-child   an epic or feature with open children and no open change:
+//                   the first child, in order
 //   finish-feature  a feature whose children are all closed
 //   release         an epic whose features are all closed
-//   continue-change a task or bug with an open change
+//   continue-change a feature, task, or bug with an open change
 //   implement       a task or bug with no open change, or an item with no kind
 
 'use strict';
@@ -38,6 +39,11 @@ function nextStep({ item, children = [], changes = [], comments = [] }) {
     if (children.length === 0) {
       return step('break-down', `${ref(item)} is a ${item.kind} with no ${childKind}s yet.`);
     }
+    // A feature is built on one change. Once that change is open, the work
+    // continues there, whichever task is next.
+    const openChange = item.kind === 'feature' && changes.find((c) => c.state === 'open');
+    if (openChange) return step('continue-change', `${ref(item)} already has an open change, #${openChange.id}.`);
+
     const open = children.find((c) => c.state !== 'closed');
     if (open && item.kind === 'epic') {
       const arch = architecture.status({ comments, children });
