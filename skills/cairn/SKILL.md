@@ -159,6 +159,13 @@ Summaries with their own shape, such as the feature-completed summary and
 the architecture, are not checked as comments. Write them in the same
 plain style.
 
+**Replies to feedback** are not one of the three kinds either. They go in
+the reviewer's thread, or on the change or item where the feedback was
+left, and are not checked as comments. Start with the bottom line: what
+changed and where, or the question you need answered. Then say how you
+validated it, and give the commit. Refer to an attached image by its place
+on the provider, never by a local copy.
+
 ## Setup check
 
 Run this when the user asks whether Cairn is set up or ready, and before the
@@ -416,6 +423,79 @@ capability: concrete engineering steps a person or an agent can pick up.
    new or already existing. Mention any feature you proposed, and suggest
    working on the first task as the next step.
 
+### Address feedback
+
+Use this for the `address-feedback` step, and when the user asks ("address
+the feedback on #31", "answer the review"). The reviewer's comments are
+answered where they were left, and every decision stays next to the
+discussion that prompted it.
+
+1. **Find the change.** The user may name the change or the item.
+   - Run `get-change --id <id>`. If it fails with `TARGET_UNAVAILABLE`, the
+     id is an item: run `get-item --id <id>`, and use the open change in
+     its `changes`. With no open change, say there is nothing in review,
+     and stop.
+   - Run `get-item` on each id in the change's `closes`, for the
+     requirements and for comments left on the items.
+2. **Collect what is unanswered.** These are the same rules `next.js`
+   uses, so a later run agrees:
+   - a review thread that is not resolved, whose newest comment is not
+     Cairn's (`cairn` is false);
+   - a comment or review summary on the change, newer (`at`) than Cairn's
+     last comment on the change;
+   - a comment on an item, newer than both the change's `opened` and
+     Cairn's last comment on that item.
+
+   Skip everything else. It is answered already.
+3. **Look at the images.** For each image in that feedback, run
+   `get-image --url <url> --out <folder>` with a temporary folder outside
+   the repository, such as the session scratchpad, and look at the file.
+   Image URLs expire a few minutes after they are read, so download right
+   after step 1. If one has expired, read again. Never copy an image into
+   the repository.
+4. **Mention a pending review.** If `review.pending` is true, the developer
+   has a review they have not submitted. Tell them, because nobody else
+   can see it until they do.
+5. **Sort each piece of feedback.**
+   - **Code:** a change to the work on the branch.
+   - **Requirement:** a change to what the item asks for.
+   - **Unclear:** you cannot tell what is wanted, or two pieces of
+     feedback disagree. Do not guess.
+   - **No action:** thanks, agreement, or a note that needs nothing. It
+     still gets a reply in step 7, even a one-line one. A reply is how
+     the record shows it was read, and without one every later run finds
+     it unanswered again.
+6. **Act on it.**
+   - **Code:** work on the change's `branch` from `get-change`. When the
+     clone is already on it, stay there. Otherwise run
+     `start-change --for <unit>`. If the branch it reports is not the
+     change's branch, stop and tell the user, because the commits would
+     land outside the change. Make the change, run the project's checks, and commit. One
+     commit per piece of feedback, or per group that touches the same
+     thing. End the message with `For <reference>.` for the task it
+     touches, or the unit when no task fits. Run `push-change`. Never open
+     a second change for feedback.
+   - **Requirement:** update the item's body with `save-item`, keeping its
+     title, and check it with `structure.js` first. When the change is
+     large, or alters a feature's tasks, ask the user before saving.
+   - **Unclear:** ask one clarifying question as the reply.
+7. **Reply where the feedback was left,** to every piece from step 2,
+   including those that need no action. Write each reply as **Comments**
+   says for replies.
+   - A review thread: `reply --on <thread> --file -`.
+   - Comments and review summaries on the change: one
+     `comment --on <change> --file -` that answers each of them by name.
+   - A comment on an item: `comment --on <item> --file -`.
+
+   Never resolve a thread or dismiss a review. That stays with the
+   reviewer.
+8. **Update the description.** When the feedback changed what the change
+   does or how to test it, draft the description again and save it with
+   `save-change`, as **Implement through a change** says.
+9. **Reply briefly** to the user: each piece of feedback, what you did,
+   and a link to your reply. Name any question still waiting for an
+   answer, and a pending review of theirs.
+
 ### Finish a feature
 
 Run this right after the last change for a feature merges, and whenever the
@@ -469,6 +549,11 @@ must reach the same step.
    node "${CLAUDE_SKILL_DIR}/providers/<provider>.js" get-item --id <id> | node "${CLAUDE_SKILL_DIR}/next.js" -
    ```
 
+   When the item's `changes` include an open change, read it first with
+   `get-change --id <change>`, save the result to a temporary file outside
+   the repository, and add `--change <that file>` to the `next.js` call.
+   Then `next.js` can see unanswered feedback.
+
    Follow the step it gives. Do not pick a different one. Tell the user the
    step and its `reason` in one line.
 4. **Act on the step.**
@@ -483,6 +568,11 @@ must reach the same step.
    - `work-on-child`: say which child is next, then repeat from step 2 on
      that child. When the user asked for "the next task", this is how you
      reach it.
+   - `address-feedback`: the open change has feedback that Cairn has not
+     answered. Run **Address feedback**. It commits and replies where
+     others read, so list the feedback first and wait for a yes, unless
+     the user already asked you to work on the item or address the
+     feedback.
    - `finish-feature`: run **Finish a feature**.
    - `release`: say every feature is closed. Releasing is not supported
      yet.
