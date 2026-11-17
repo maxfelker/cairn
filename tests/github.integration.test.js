@@ -40,7 +40,7 @@ test('check: READ access lists what it allows', () => {
 test('the mock gh rejects commands it does not model', () => {
   const gh = fakeGitHub();
   const { spawnSync } = require('node:child_process');
-  const r = spawnSync('gh', ['pr', 'merge', '1'], { env: gh.env, encoding: 'utf8' });
+  const r = spawnSync('gh', ['pr', 'close', '1'], { env: gh.env, encoding: 'utf8' });
   assert.equal(r.status, 64);
   assert.match(r.stderr, /unsupported command/);
 });
@@ -359,9 +359,10 @@ test('get-item: returns the body, comments, and children with their kinds', () =
   });
   const { status, json } = gh.run('get-item', '--id', '1');
   assert.equal(status, 0, JSON.stringify(json));
-  assert.deepEqual(json.item, { id: '1', url: 'https://github.com/octo/repo/issues/1', title: 'Trading', kind: 'epic', state: 'open', body: 'Why…', parent: null });
+  assert.deepEqual(json.item, { id: '1', url: 'https://github.com/octo/repo/issues/1', title: 'Trading', kind: 'epic', state: 'open', body: 'Why…', images: [], parent: null });
   assert.equal(gh.run('get-item', '--id', '2').json.item.parent, '1');
-  assert.deepEqual(json.comments, [{ author: 'pm', body: 'Include allies?' }, { author: 'octo', body: 'Later.' }]);
+  assert.deepEqual(json.comments.map((c) => [c.author, c.body, c.cairn, c.images]), [['pm', 'Include allies?', false, []], ['octo', 'Later.', false, []]]);
+  assert.match(json.comments[0].url, /\/issues\/1#issuecomment-\d+$/);
   assert.deepEqual(json.changes, []);
   assert.deepEqual(json.children, [
     { id: '2', title: 'A player can trade food', kind: 'feature', state: 'open' },
@@ -893,4 +894,379 @@ test('save-change: an unpushed branch, main, and missing access are refused befo
   }
   assert.equal(onMain.run('save-change', '--for', '8', '--file', 'x.md', '--closes', '21').status, 2, '--closes needs --partial');
   assert.equal(onMain.run('save-change', '--for', '8', '--file', onMain.draft('bad.md', 'No title\n')).json.code, 'INVALID_DRAFT');
+});
+
+// A feature #8 with one open pull request, #30, from its linked branch.
+function changeFor(pull = {}) {
+  return fakeGitHub({
+    issues: [{ number: 8, title: 'Let players zoom the map', type: 'Feature', labels: ['feature'] }],
+    issueTypes: ['Feature', 'Task'],
+    linkedBranches: { 8: ['8-zoom'] },
+    pulls: [{ number: 30, state: 'OPEN', head: '8-zoom', title: 'Zoom', body: 'Zoom.\n\nCloses #8\n', ...pull }],
+  });
+}
+
+test('get-change: a ready change with passing checks, an approval, and no threads', () => {
+  const gh = changeFor({
+    checks: [{ __typename: 'CheckRun', name: 'test', status: 'COMPLETED', conclusion: 'SUCCESS' }, { __typename: 'StatusContext', context: 'ci/lint', state: 'SUCCESS' }],
+    reviewDecision: 'APPROVED',
+  });
+  const { status, json } = gh.run('get-change', '--id', '30');
+  assert.equal(status, 0, JSON.stringify(json));
+  assert.deepEqual(json, {
+    ok: true,
+    provider: 'github',
+    change: { id: '30', url: 'https://github.com/octo/repo/pull/30', state: 'open', branch: '8-zoom', opened: '2026-01-01T00:00:00.000Z', closes: ['8'] },
+    checks: { state: 'passed', runs: [{ name: 'test', state: 'passed' }, { name: 'ci/lint', state: 'passed' }] },
+    review: { decision: 'approved', pending: false },
+    mergeable: 'mergeable',
+    mergeState: 'clean',
+    behind: 0,
+    reviews: [],
+    comments: [],
+    threads: [],
+  });
+});
+
+test('get-change: failing and pending checks, and resolved, outdated, and open threads', () => {
+  const gh = changeFor({
+    checks: [
+      { __typename: 'CheckRun', name: 'test', status: 'COMPLETED', conclusion: 'FAILURE' },
+      { __typename: 'CheckRun', name: 'build', status: 'IN_PROGRESS', conclusion: null },
+    ],
+    reviewDecision: 'CHANGES_REQUESTED',
+    threads: [
+      { id: 'T1', resolved: true, path: 'map.js', line: 4, comments: [{ id: 501, author: 'rev', body: 'Rename this.' }] },
+      { id: 'T2', outdated: true, path: 'map.js', line: null, comments: [{ id: 502, author: 'rev', body: 'Old line.' }] },
+      { id: 'T3', path: 'zoom.js', line: 12, comments: [{ id: 503, author: 'rev', body: 'Clamp the zoom?' }, { id: 504, author: 'octo', body: 'Done in abc123.\n\n<!-- cairn -->' }] },
+    ],
+  });
+  const { status, json } = gh.run('get-change', '--id', '30');
+  assert.equal(status, 0, JSON.stringify(json));
+  assert.equal(json.checks.state, 'failed');
+  assert.deepEqual(json.checks.runs.map((r) => r.state), ['failed', 'pending']);
+  assert.equal(json.review.decision, 'changes_requested');
+  assert.deepEqual(json.threads.map((t) => [t.id, t.resolved, t.outdated]), [['T1', true, false], ['T2', false, true], ['T3', false, false]]);
+  const t3 = json.threads[2];
+  assert.equal(t3.path, 'zoom.js');
+  assert.equal(t3.line, 12);
+  assert.deepEqual(t3.comments.map((c) => [c.id, c.author, c.cairn]), [['503', 'rev', false], ['504', 'octo', true]]);
+  assert.match(t3.comments[0].url, /\/pull\/30#discussion_r503$/);
+});
+
+test('get-change: pending checks only give pending, and no checks give none', () => {
+  const pending = changeFor({ checks: [{ __typename: 'StatusContext', context: 'ci', state: 'PENDING' }] });
+  assert.equal(pending.run('get-change', '--id', '30').json.checks.state, 'pending');
+  assert.deepEqual(changeFor().run('get-change', '--id', '30').json.checks, { state: 'none', runs: [] });
+});
+
+test('get-change: a change behind main, and a change with conflicts', () => {
+  const behind = changeFor({ behind: 3, mergeState: 'BEHIND' });
+  const a = behind.run('get-change', '--id', '30').json;
+  assert.equal(a.behind, 3);
+  assert.equal(a.mergeState, 'behind');
+
+  const conflict = changeFor({ mergeable: 'CONFLICTING', mergeState: 'DIRTY' });
+  const b = conflict.run('get-change', '--id', '30').json;
+  assert.equal(b.mergeable, 'conflicting');
+  assert.equal(b.mergeState, 'dirty');
+});
+
+test('get-change: a pending review by the current user is reported', () => {
+  const gh = changeFor({ pendingReview: true });
+  assert.equal(gh.run('get-change', '--id', '30').json.review.pending, true);
+});
+
+test('get-change: a merged change has no branch comparison', () => {
+  const gh = changeFor({ state: 'MERGED' });
+  const { status, json } = gh.run('get-change', '--id', '30');
+  assert.equal(status, 0, JSON.stringify(json));
+  assert.equal(json.change.state, 'merged');
+  assert.equal(json.behind, null);
+  assert.equal(gh.state().calls.filter((c) => c[0] === 'api' && /compare/.test(c.join(' '))).length, 0);
+});
+
+test('get-change: an unknown change and wrong usage are refused', () => {
+  const gh = changeFor();
+  const { status, json } = gh.run('get-change', '--id', '99');
+  assert.equal(status, 1);
+  assert.equal(json.code, 'TARGET_UNAVAILABLE');
+  assert.equal(gh.run('get-change').status, 2);
+  assert.equal(gh.run('get-change', '--id', 'abc').status, 2);
+});
+
+test('get-change: it only reads', () => {
+  const gh = changeFor({ threads: [{ id: 'T1', comments: [{ id: 501, author: 'rev', body: 'Hm.' }] }] });
+  gh.run('get-change', '--id', '30');
+  const writes = gh.state().calls.filter((c) => c.includes('-X') || ['create', 'edit', 'merge'].includes(c[1]));
+  assert.deepEqual(writes, []);
+});
+
+// Images: GitHub's rendering gives each attached image a signed URL.
+
+const SHOT = '<img width="10" height="10" alt="zoom bug" src="https://github.com/user-attachments/assets/abc-123" />';
+
+test('get-item: the item and its comments list their attached images', () => {
+  const gh = fakeGitHub({
+    issues: [{
+      number: 1,
+      title: 'Zoom',
+      body: `It jumps.\n\n${SHOT}`,
+      comments: [
+        { author: 'rev', body: 'Two shots:\n\n![before](https://github.com/user-attachments/assets/b1)\n![after](https://github.com/user-attachments/assets/b2)' },
+        { author: 'octo', body: 'Fixed.\n\n<!-- cairn -->' },
+      ],
+    }],
+  });
+  const { status, json } = gh.run('get-item', '--id', '1');
+  assert.equal(status, 0, JSON.stringify(json));
+  assert.deepEqual(json.item.images, [{ url: 'https://private-user-images.githubusercontent.com/1/abc-123.png?jwt=fake&v=1', alt: 'zoom bug' }]);
+  assert.deepEqual(json.comments[0].images.map((i) => i.alt), ['before', 'after']);
+  assert.deepEqual(json.comments[1].images, []);
+  assert.equal(json.comments[1].cairn, true, 'the marker is read from the Markdown, which keeps it');
+  assert.ok(json.item.body.includes('user-attachments'), 'the body stays the Markdown');
+});
+
+test('get-change: conversation comments, review summaries, and thread comments list their images', () => {
+  const gh = changeFor({
+    comments: [{ id: 701, author: 'pm', body: `Make it look like this.\n\n${SHOT}` }],
+    reviews: [
+      { id: 801, author: 'rev', state: 'CHANGES_REQUESTED', body: 'See the line notes.' },
+      { id: 802, author: 'rev', state: 'COMMENTED', body: '' },
+    ],
+    threads: [{ id: 'T1', path: 'zoom.js', line: 3, comments: [{ id: 901, author: 'rev', body: `Off by one?\n\n${SHOT}` }] }],
+  });
+  const { status, json } = gh.run('get-change', '--id', '30');
+  assert.equal(status, 0, JSON.stringify(json));
+  assert.deepEqual(json.comments.map((c) => [c.id, c.author, c.images.length]), [['701', 'pm', 1]]);
+  assert.match(json.comments[0].url, /#issuecomment-701$/);
+  assert.deepEqual(json.reviews.map((r) => [r.id, r.state, r.body]), [['801', 'changes_requested', 'See the line notes.']], 'a review with no summary is left out');
+  assert.deepEqual(json.threads[0].comments[0].images, [{ url: 'https://private-user-images.githubusercontent.com/1/abc-123.png?jwt=fake&v=1', alt: 'zoom bug' }]);
+});
+
+// get-image runs a download in a child process, so these tests serve images
+// from a local server and run the adapter asynchronously.
+
+const http = require('node:http');
+const os = require('node:os');
+const { spawn } = require('node:child_process');
+
+const PNG = Buffer.from('89504e470d0a1a0a0000000d49484452000000010000000108060000001f15c4890000000d4944415478da6360000002000154a24f5d0000000049454e44ae426082', 'hex');
+
+async function withServer(fn) {
+  const server = http.createServer((req, res) => {
+    if (req.url.startsWith('/shot')) {
+      res.writeHead(200, { 'content-type': 'image/png' });
+      res.end(PNG);
+    } else if (req.url === '/page') {
+      res.writeHead(200, { 'content-type': 'text/html' });
+      res.end('<p>not an image</p>');
+    } else {
+      res.writeHead(404);
+      res.end();
+    }
+  });
+  await new Promise((r) => server.listen(0, '127.0.0.1', r));
+  try {
+    return await fn(`http://127.0.0.1:${server.address().port}`);
+  } finally {
+    server.close();
+  }
+}
+
+function runAsync(gh, ...args) {
+  return new Promise((resolve) => {
+    const env = { ...gh.env, CAIRN_IMAGE_HOSTS: '127.0.0.1' };
+    const child = spawn(process.execPath, [path.join(__dirname, '..', 'skills', 'cairn', 'providers', 'github.js'), ...args], { cwd: gh.cwd, env });
+    let out = '';
+    child.stdout.on('data', (d) => { out += d; });
+    child.on('close', (status) => resolve({ status, json: out ? JSON.parse(out) : null }));
+  });
+}
+
+test('get-image: downloads an image outside the repository, and gives it an extension', async () => {
+  const gh = fakeGitHub();
+  const out = fs.mkdtempSync(path.join(os.tmpdir(), 'cairn-img-'));
+  await withServer(async (base) => {
+    const { status, json } = await runAsync(gh, 'get-image', '--url', `${base}/shot?jwt=x`, '--out', path.join(out, 'new'));
+    assert.equal(status, 0, JSON.stringify(json));
+    assert.equal(json.type, 'image/png');
+    assert.equal(json.bytes, PNG.length);
+    assert.equal(json.path, path.join(fs.realpathSync(out), 'new', 'shot.png'));
+    assert.deepEqual(fs.readFileSync(json.path), PNG);
+  });
+});
+
+test('get-image: a folder inside the repository is refused before anything is downloaded', async () => {
+  const gh = fakeGitHub();
+  await withServer(async (base) => {
+    for (const out of ['.', 'shots', path.join(gh.cwd, 'deep', 'er')]) {
+      const { status, json } = await runAsync(gh, 'get-image', '--url', `${base}/shot`, '--out', out);
+      assert.equal(status, 1);
+      assert.equal(json.code, 'INSIDE_REPO', out);
+    }
+  });
+  assert.equal(fs.existsSync(path.join(gh.cwd, 'shots')), false, 'no folder is made inside the repository');
+  assert.deepEqual(gh.git('status', '--porcelain'), '');
+});
+
+test('get-image: an expired link, a page that is not an image, and a host that is not GitHub', async () => {
+  const gh = fakeGitHub();
+  const out = fs.mkdtempSync(path.join(os.tmpdir(), 'cairn-img-'));
+  await withServer(async (base) => {
+    const expired = await runAsync(gh, 'get-image', '--url', `${base}/gone`, '--out', out);
+    assert.equal(expired.json.code, 'PROVIDER_ERROR');
+    assert.match(expired.json.fix, /expire/);
+    const page = await runAsync(gh, 'get-image', '--url', `${base}/page`, '--out', out);
+    assert.equal(page.json.code, 'PROVIDER_ERROR');
+    assert.match(page.json.message, /not an image/);
+  });
+  assert.deepEqual(fs.readdirSync(out), [], 'nothing is saved');
+  const elsewhere = gh.run('get-image', '--url', 'https://example.com/x.png', '--out', out);
+  assert.equal(elsewhere.json.code, 'NOT_THIS_PROVIDER');
+  const plain = gh.run('get-image', '--url', 'http://private-user-images.githubusercontent.com/1/x.png', '--out', out);
+  assert.equal(plain.json.code, 'NOT_THIS_PROVIDER', 'only https from GitHub');
+  assert.equal(gh.run('get-image', '--url', 'x').status, 2);
+});
+
+// reply: an answer inside one review thread.
+
+function withThread(extra = {}) {
+  return changeFor({
+    threads: [{ id: 'PRRT_1', path: 'zoom.js', line: 12, comments: [{ id: 503, author: 'rev', body: 'Clamp the zoom?' }] }],
+    ...extra,
+  });
+}
+
+test('reply: posts one marked reply in the thread, and leaves it unresolved', () => {
+  const gh = withThread();
+  const { status, json } = gh.run('reply', '--on', 'PRRT_1', '--file', gh.draft('r.md', 'Clamped to 1–8 in abc123. The zoom test covers both ends.\n'));
+  assert.equal(status, 0, JSON.stringify(json));
+  assert.equal(json.created, true);
+  assert.equal(json.change, '30');
+  assert.match(json.comment.url, /\/pull\/30#discussion_r\d+$/);
+
+  const th = gh.state().pulls[0].threads[0];
+  assert.equal(th.comments.length, 2);
+  assert.equal(th.comments[1].body, 'Clamped to 1–8 in abc123. The zoom test covers both ends.\n\n<!-- cairn -->');
+  assert.ok(!th.resolved, 'the thread stays unresolved');
+
+  const read = gh.run('get-change', '--id', '30').json.threads[0];
+  assert.equal(read.resolved, false);
+  assert.equal(read.comments[1].cairn, true, 'get-change sees the reply as Cairn\'s');
+});
+
+test('reply: the same reply twice is posted once', () => {
+  const gh = withThread();
+  const draft = gh.draft('r.md', 'Done.\n');
+  gh.run('reply', '--on', 'PRRT_1', '--file', draft);
+  const { json } = gh.run('reply', '--on', 'PRRT_1', '--file', draft);
+  assert.equal(json.created, false);
+  assert.equal(gh.state().pulls[0].threads[0].comments.length, 2);
+});
+
+test('reply: an unknown thread and a thread in another repository are refused', () => {
+  const gh = withThread();
+  const draft = gh.draft('r.md', 'Done.\n');
+  assert.equal(gh.run('reply', '--on', 'PRRT_404', '--file', draft).json.code, 'TARGET_UNAVAILABLE');
+
+  const other = changeFor({ repo: 'someone/else', threads: [{ id: 'PRRT_9', comments: [{ id: 1, author: 'x', body: 'Hi' }] }] });
+  const r = other.run('reply', '--on', 'PRRT_9', '--file', other.draft('r.md', 'Done.\n'));
+  assert.equal(r.json.code, 'TARGET_UNAVAILABLE');
+  assert.equal(other.state().pulls[0].threads[0].comments.length, 1, 'nothing is posted');
+});
+
+test('reply: an empty reply and wrong usage post nothing, and nothing resolves or dismisses', () => {
+  const gh = withThread({});
+  const empty = gh.run('reply', '--on', 'PRRT_1', '--file', gh.draft('e.md', '  \n'));
+  assert.equal(empty.json.code, 'INVALID_DRAFT');
+  assert.equal(gh.run('reply', '--on', 'PRRT_1').status, 2);
+  assert.equal(gh.run('reply', '--on', 'bad id', '--file', 'x').status, 2);
+  assert.equal(gh.state().pulls[0].threads[0].comments.length, 1);
+  assert.equal(gh.state().calls.filter((c) => c.some((a) => /resolveReviewThread|dismissPullRequestReview/.test(a))).length, 0, 'nothing resolves or dismisses');
+});
+
+// merge-change: merges only with explicit approval.
+
+const ghCalls = (gh, sub) => gh.state().calls.filter((c) => c[0] === 'pr' && c[1] === sub);
+
+test('merge-change: without --approved, nothing is called and nothing merges', () => {
+  const gh = changeFor();
+  const { status, json } = gh.run('merge-change', '--id', '30');
+  assert.equal(status, 1);
+  assert.equal(json.code, 'NOT_APPROVED');
+  assert.deepEqual(gh.state().calls, [], 'no call to GitHub at all');
+  assert.equal(gh.state().pulls[0].state, 'OPEN');
+});
+
+test('merge-change: with --approved, the change merges with a merge commit, closes its items, and keeps the branch', () => {
+  const gh = changeFor();
+  const { status, json } = gh.run('merge-change', '--id', '30', '--approved');
+  assert.equal(status, 0, JSON.stringify(json));
+  assert.deepEqual(json, { ok: true, provider: 'github', change: { id: '30', url: 'https://github.com/octo/repo/pull/30' }, merged: true, method: 'merge', commit: 'c0ffee0000000000000000000000000000000000' });
+  const s = gh.state();
+  assert.equal(s.pulls[0].mergedWith, 'merge');
+  assert.equal(s.issues.find((i) => i.number === 8).state, 'CLOSED');
+  const merge = ghCalls(gh, 'merge')[0];
+  for (const never of ['--admin', '--auto', '--delete-branch']) assert.ok(!merge.includes(never), never);
+});
+
+test('merge-change: uses squash, then rebase, when the repository does not allow merge commits', () => {
+  const squash = changeFor();
+  const st = squash.state();
+  st.mergeMethods = { merge: false };
+  require('node:fs').writeFileSync(squash.env.FAKE_GH_STATE, JSON.stringify(st));
+  assert.equal(squash.run('merge-change', '--id', '30', '--approved').json.method, 'squash');
+
+  const rebase = changeFor();
+  const st2 = rebase.state();
+  st2.mergeMethods = { merge: false, squash: false };
+  require('node:fs').writeFileSync(rebase.env.FAKE_GH_STATE, JSON.stringify(st2));
+  assert.equal(rebase.run('merge-change', '--id', '30', '--approved').json.method, 'rebase');
+});
+
+test('merge-change: a branch protection failure is reported as PROTECTED, and not retried another way', () => {
+  const gh = changeFor({ blockedBy: 'the base branch policy prohibits the merge.' });
+  const { status, json } = gh.run('merge-change', '--id', '30', '--approved');
+  assert.equal(status, 1);
+  assert.equal(json.code, 'PROTECTED');
+  assert.match(json.message, /base branch policy/);
+  assert.match(json.fix, /never bypasses/);
+  assert.equal(ghCalls(gh, 'merge').length, 1, 'one attempt only');
+  assert.equal(gh.state().pulls[0].state, 'OPEN');
+});
+
+test('merge-change: a conflict is a provider error, not a protection', () => {
+  const gh = changeFor({ mergeable: 'CONFLICTING' });
+  const { json } = gh.run('merge-change', '--id', '30', '--approved');
+  assert.equal(json.code, 'PROVIDER_ERROR');
+  assert.match(json.message, /cleanly/);
+});
+
+test('merge-change: a second run on a merged change succeeds and merges nothing', () => {
+  const gh = changeFor();
+  gh.run('merge-change', '--id', '30', '--approved');
+  const { status, json } = gh.run('merge-change', '--id', '30', '--approved');
+  assert.equal(status, 0, JSON.stringify(json));
+  assert.equal(json.merged, false);
+  assert.equal(json.commit, 'c0ffee0000000000000000000000000000000000');
+  assert.equal(ghCalls(gh, 'merge').length, 1);
+});
+
+test('merge-change: missing access, an unknown change, a closed change, and wrong usage merge nothing', () => {
+  const readOnly = changeFor();
+  const st = readOnly.state();
+  st.permission = 'TRIAGE';
+  require('node:fs').writeFileSync(readOnly.env.FAKE_GH_STATE, JSON.stringify(st));
+  assert.equal(readOnly.run('merge-change', '--id', '30', '--approved').json.code, 'MISSING_PERMISSION');
+  assert.equal(ghCalls(readOnly, 'merge').length, 0);
+
+  const gh = changeFor({ state: 'CLOSED' });
+  assert.equal(gh.run('merge-change', '--id', '99', '--approved').json.code, 'TARGET_UNAVAILABLE');
+  const closed = gh.run('merge-change', '--id', '30', '--approved').json;
+  assert.equal(closed.code, 'TARGET_UNAVAILABLE');
+  assert.match(closed.message, /closed without being merged/);
+  assert.equal(gh.run('merge-change', '--approved').status, 2);
+  assert.equal(gh.run('merge-change', '--id', '30', '--approved', 'yes').status, 2);
+  assert.equal(ghCalls(gh, 'merge').length, 0);
 });

@@ -7,8 +7,8 @@ description: >
   features or tasks, design or record an epic's architecture ("how should we
   build epic #1?"), work on, pick up, or continue an item by number, link, or
   description ("work on #42", "pick up the next task", "work on the camera
-  feature"), address issue or review feedback, check whether a pull request is ready, or cut a
-  release, and when they ask whether Cairn is set up or ready ("is Cairn set
+  feature"), address issue or review feedback, check whether a pull request is
+  ready or merge one ("is #31 ready?", "merge PR #31"), or cut a release, and when they ask whether Cairn is set up or ready ("is Cairn set
   up?", "check Cairn").
 license: GPL-3.0-only
 # Pre-approve only the read-only setup checks and Cairn's own adapters, so the
@@ -158,6 +158,13 @@ Not this, which hides the result and reads like a form:
 Summaries with their own shape, such as the feature-completed summary and
 the architecture, are not checked as comments. Write them in the same
 plain style.
+
+**Replies to feedback** are not one of the three kinds either. They go in
+the reviewer's thread, or on the change or item where the feedback was
+left, and are not checked as comments. Start with the bottom line: what
+changed and where, or the question you need answered. Then say how you
+validated it, and give the commit. Refer to an attached image by its place
+on the provider, never by a local copy.
 
 ## Setup check
 
@@ -416,6 +423,145 @@ capability: concrete engineering steps a person or an agent can pick up.
    new or already existing. Mention any feature you proposed, and suggest
    working on the first task as the next step.
 
+### Address feedback
+
+Use this for the `address-feedback` step, and when the user asks ("address
+the feedback on #31", "answer the review"). The reviewer's comments are
+answered where they were left, and every decision stays next to the
+discussion that prompted it.
+
+1. **Find the change.** The user may name the change or the item.
+   - Run `get-change --id <id>`. If it fails with `TARGET_UNAVAILABLE`, the
+     id is an item: run `get-item --id <id>`, and use the open change in
+     its `changes`. With no open change, say there is nothing in review,
+     and stop.
+   - Run `get-item` on each id in the change's `closes`, for the
+     requirements and for comments left on the items.
+2. **Collect what is unanswered.** These are the same rules `next.js`
+   uses, so a later run agrees:
+   - a review thread that is not resolved, whose newest comment is not
+     Cairn's (`cairn` is false);
+   - a comment or review summary on the change, newer (`at`) than Cairn's
+     last comment on the change;
+   - a comment on an item, newer than both the change's `opened` and
+     Cairn's last comment on that item.
+
+   Skip everything else. It is answered already.
+3. **Look at the images.** For each image in that feedback, run
+   `get-image --url <url> --out <folder>` with a temporary folder outside
+   the repository, such as the session scratchpad, and look at the file.
+   Image URLs expire a few minutes after they are read, so download right
+   after step 1. If one has expired, read again. Never copy an image into
+   the repository.
+4. **Mention a pending review.** If `review.pending` is true, the developer
+   has a review they have not submitted. Tell them, because nobody else
+   can see it until they do.
+5. **Sort each piece of feedback.**
+   - **Code:** a change to the work on the branch.
+   - **Requirement:** a change to what the item asks for.
+   - **Unclear:** you cannot tell what is wanted, or two pieces of
+     feedback disagree. Do not guess.
+   - **No action:** thanks, agreement, or a note that needs nothing. It
+     still gets a reply in step 7, even a one-line one. A reply is how
+     the record shows it was read, and without one every later run finds
+     it unanswered again.
+6. **Act on it.**
+   - **Code:** work on the change's `branch` from `get-change`. When the
+     clone is already on it, stay there. Otherwise run
+     `start-change --for <unit>`. If the branch it reports is not the
+     change's branch, stop and tell the user, because the commits would
+     land outside the change. Make the change, run the project's checks, and commit. One
+     commit per piece of feedback, or per group that touches the same
+     thing. End the message with `For <reference>.` for the task it
+     touches, or the unit when no task fits. Run `push-change`. Never open
+     a second change for feedback.
+   - **Requirement:** update the item's body with `save-item`, keeping its
+     title, and check it with `structure.js` first. When the change is
+     large, or alters a feature's tasks, ask the user before saving.
+   - **Unclear:** ask one clarifying question as the reply.
+7. **Reply where the feedback was left,** to every piece from step 2,
+   including those that need no action. Write each reply as **Comments**
+   says for replies.
+   - A review thread: `reply --on <thread> --file -`.
+   - Comments and review summaries on the change: one
+     `comment --on <change> --file -` that answers each of them by name.
+   - A comment on an item: `comment --on <item> --file -`.
+
+   Never resolve a thread or dismiss a review. That stays with the
+   reviewer.
+8. **Update the description.** When the feedback changed what the change
+   does or how to test it, draft the description again and save it with
+   `save-change`, as **Implement through a change** says.
+9. **Reply briefly** to the user: each piece of feedback, what you did,
+   and a link to your reply. Name any question still waiting for an
+   answer, and a pending review of theirs.
+
+### Check readiness and merge
+
+Use this when the user asks whether a change is ready ("is #31 ready to
+merge?", "can we ship the camera feature?"), or asks to merge one. Cairn
+gives one clear verdict, posts it on the change so everyone reads the same
+answer, and merges only after the developer says yes.
+
+1. **Find the change** as **Address feedback** step 1 says, and read each
+   item it closes with `get-item`. For a feature, read its tasks too: their
+   **Done when** items are the feature's criteria.
+2. **Check each criterion.** For each checklist item in the **Done when**
+   or **Acceptance criteria** of every closing item, decide whether the
+   change meets it. Read the diff (`git diff origin/main...<branch>`) and
+   the commits. Give evidence for each: a commit, a test, a file, or a
+   check. Say "not met" when you cannot find evidence. Do not assume.
+3. **Check the rest.** From `get-change`:
+   - **Checks:** `checks.state`. `failed` or `pending` is not ready. Name
+     each failed or pending run. With no checks, say so.
+   - **Review:** `review.decision`. `changes_requested` or
+     `review_required` is not ready. If `review.pending` is true, the
+     developer has an unsubmitted review: say so.
+   - **Feedback:** run `next.js` with `--change`, as **Work on an item**
+     says. `address-feedback` is not ready.
+   - **Branch:** `mergeable` `conflicting` is not ready. When `behind` is
+     more than 0, say how many commits behind `main` the branch is. It
+     blocks only when `mergeState` is `behind` or `blocked`.
+4. **Give the verdict.** The change is ready when every criterion is met
+   and nothing in step 3 blocks it. Otherwise list exactly what remains,
+   one line each, with what would fix it.
+5. **Post it on the change.** Pipe the summary to
+   `comment --on <change> --key readiness --file -`. The key makes a
+   re-run update the same comment instead of adding another. Use this
+   shape:
+
+   ```
+   **Ready to merge.** <or> **Not ready to merge:** <how many> things remain.
+
+   <One or two plain sentences on the verdict.>
+
+   | Criterion | Met | Evidence |
+   |---|---|---|
+   | <criterion, with its item reference> | Yes / No | <commit, test, file, or check> |
+
+   **Checks:** <state, and any failed or pending run>
+   **Review:** <decision, and who approved or asked for changes>
+   **Branch:** <up to date or how far behind; conflicts or none>
+
+   **Remains:**
+   - <one line per thing left, and what would fix it>
+   ```
+
+   Leave out **Remains** when the change is ready.
+6. **Offer to merge, only when ready.** Ask one plain question, such as
+   "#31 is ready. Merge it into main?", and wait. A yes means an explicit
+   yes to merging this change, in this session. When the user's own
+   request was to merge this change, that request is the yes. Approval for
+   another change, or from an earlier session, does not count. When the
+   change is not ready, never offer to merge, even if asked: say what
+   remains.
+7. **Merge on a yes.** Run `merge-change --id <change> --approved`.
+   - `PROTECTED`: report GitHub's rule as it is, and what would satisfy
+     it. Never work around it.
+   - Any other failure: report it, and leave the change open.
+8. **Finish.** After the merge, run **Finish a feature** for each feature
+   the change closed, and reply with the link to the merged change.
+
 ### Finish a feature
 
 Run this right after the last change for a feature merges, and whenever the
@@ -469,6 +615,11 @@ must reach the same step.
    node "${CLAUDE_SKILL_DIR}/providers/<provider>.js" get-item --id <id> | node "${CLAUDE_SKILL_DIR}/next.js" -
    ```
 
+   When the item's `changes` include an open change, read it first with
+   `get-change --id <change>`, save the result to a temporary file outside
+   the repository, and add `--change <that file>` to the `next.js` call.
+   Then `next.js` can see unanswered feedback.
+
    Follow the step it gives. Do not pick a different one. Tell the user the
    step and its `reason` in one line.
 4. **Act on the step.**
@@ -483,6 +634,11 @@ must reach the same step.
    - `work-on-child`: say which child is next, then repeat from step 2 on
      that child. When the user asked for "the next task", this is how you
      reach it.
+   - `address-feedback`: the open change has feedback that Cairn has not
+     answered. Run **Address feedback**. It commits and replies where
+     others read, so list the feedback first and wait for a yes, unless
+     the user already asked you to work on the item or address the
+     feedback.
    - `finish-feature`: run **Finish a feature**.
    - `release`: say every feature is closed. Releasing is not supported
      yet.
@@ -515,7 +671,8 @@ These rules have no exceptions:
 - Never stash, discard, overwrite, or commit changes you did not make.
 - Never run git or the provider's own commands for something a change
   command covers: `start-change`, `push-change`, and `save-change`.
-- Never merge. Merging needs the user's approval and is not supported yet.
+- Never merge here. Merging happens only in **Check readiness and merge**,
+  after the developer approves.
 
 1. **Pick the unit.** The unit is the item the change is for.
    - A task under a feature: the unit is the feature. A feature gets one
@@ -536,12 +693,19 @@ These rules have no exceptions:
    the branch is done. When you cannot tell from the commit messages, read
    the diff. Do not build a task twice.
 4. **Build the tasks in order.** Take the unit's open children in the
-   order `get-item` lists them. For each one:
+   order `get-item` lists them. Build them one after another, without
+   stopping to report or to ask whether to go on. The tasks were thought
+   through when the feature was broken down, and the developer sees the
+   finished feature through its change. Stop early only when you are
+   blocked, or need a decision or approval that is the developer's. For
+   each one:
    - Read it with `get-item`, and build what it asks for. Follow its
      implementation guidance and its validation.
    - Run the project's own checks, and fix what fails.
-   - Commit in steps that each make sense alone. Stage files by name, and
-     only files this work changed. Never stage everything.
+   - Make each task one commit: the task is the commit boundary, so a
+     reviewer can read the change task by task. Split a task into more
+     commits only when one commit would mix unrelated steps. Stage files
+     by name, and only files this work changed. Never stage everything.
    - Write a commit message a person can read. The first line says what
      changed, in plain words. After a blank line, say why, when the reason
      is not obvious. End with the task on its own line, as
@@ -607,7 +771,8 @@ These rules have no exceptions:
      items. Follow the `fix`. When the fix needs the provider's own page,
      tell the user what to do there, and do not call the change ready.
 7. **Reply briefly** with the link to the change, what was validated, and
-   anything left open. The user reviews and merges it.
+   anything left open. The user reviews it. When they ask whether it is
+   ready, or to merge it, run **Check readiness and merge**.
 
 For `continue-change`, the change is already open. Do steps 2 to 5, then
 run `save-change` again when the description no longer matches the work.

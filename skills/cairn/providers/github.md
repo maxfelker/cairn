@@ -38,7 +38,7 @@ Run each one as `node "${CLAUDE_SKILL_DIR}/providers/github.js" <command>`.
 | `access [--for <action>]` | `gh repo view --json viewerPermission,hasIssuesEnabled` | See the role table |
 | `check` | all three | For the setup check |
 | `find-item --query <text>` | `gh api` one issue, or the open issue listing | A `github.com/OWNER/REPO/issues/N` link must be this repository |
-| `get-item --id <n>` | `gh api` issue, comments, sub-issues, parent; GraphQL closing PRs | |
+| `get-item --id <n>` | `gh api` issue, comments, sub-issues, parent; GraphQL closing PRs | Reads issue and comments as `full+json`, for image URLs |
 | `comment --on <n> --file - [--key <k>]` | `gh api` issue comments | Adds the hidden Cairn marker |
 | `list-items --kind <kind>` | `gh api` issues by type or label | |
 | `order-children --parent <n> --ids <n,n>` | `gh api` sub-issue reprioritize | Moves only what is out of place |
@@ -46,6 +46,10 @@ Run each one as `node "${CLAUDE_SKILL_DIR}/providers/github.js" <command>`.
 | `start-change --for <n> [--partial <name>]` | `gh issue develop`, `git fetch`, `git checkout` | The linked branch gets GitHub's own name. A partial branch is `<n>-<name>` |
 | `push-change` | `git ls-remote`, `git push -u origin HEAD` | No force flag, ever |
 | `save-change --for <n> --file - [--partial [--closes <n,n>]]` | `gh pr list`, `gh pr create` or `gh pr edit`, `gh pr view` | Ends the description with `Closes #n` lines, or `Part of #n.` |
+| `get-change --id <n>` | `gh pr view --json`, GraphQL review threads and pending review, `gh api` compare with `main` | `decision`, `mergeable`, and `mergeState` are GitHub's values in lowercase, such as `changes_requested` and `behind` |
+| `get-image --url <url> --out <folder>` | Node `fetch` in a child process, with no token | Only `https` URLs on `*.githubusercontent.com` or `github.com/user-attachments` |
+| `reply --on <thread> --file -` | GraphQL `node` read, then `addPullRequestReviewThreadReply` | The thread id is the `PRRT_…` id from `get-change`, and must be in this repository. Answer a pull request's conversation with `comment --on <n>` |
+| `merge-change --id <n> --approved` | `gh pr view`, `gh repo view` merge settings, `gh pr merge --merge` | A merge commit when allowed, else squash, else rebase. Never `--admin`, `--auto`, or `--delete-branch` |
 
 How contract actions map to GitHub repository roles:
 
@@ -54,7 +58,7 @@ How contract actions map to GitHub repository roles:
 | `comment` | READ | |
 | `create-item` | READ | Issues turned on |
 | `label`, `link-child` | TRIAGE | Issues turned on |
-| `push`, `propose-change` | WRITE | |
+| `push`, `propose-change`, `merge` | WRITE | |
 
 ## Changes
 
@@ -72,10 +76,27 @@ How contract actions map to GitHub repository roles:
   `CLOSES_MISMATCH` when this happens.
 - GitHub works out the closing links a moment after the description is
   saved, so `save-change` reads them up to three times.
+- **Review threads are GraphQL only.** Resolved and outdated state, and a
+  pending review, are not in the REST API. A pending review is visible
+  only to its author, so `review.pending` is always the user's own.
+  `get-change` reads the first 100 threads, and the first 100 comments in
+  each.
+
+## Images
+
+An image pasted into GitHub is stored as a `github.com/user-attachments`
+URL in the Markdown. In a private repository that URL needs the user's
+token. GitHub's HTML rendering (`body_html` with the
+`application/vnd.github.full+json` media type, or `bodyHTML` in GraphQL)
+instead has a signed `private-user-images.githubusercontent.com` URL that
+downloads with no credentials for five minutes. Cairn lists those, so
+`get-image` never handles a token. The signed URL is a short-lived link to
+one image, not a credential for the account.
 
 Branch protection and required reviews can still block a push or merge,
 even with the role. Report those errors as GitHub returns them, and never
-bypass them.
+bypass them. `merge-change` reports a blocked merge as `PROTECTED`. It
+keeps the branch, because another pull request may be stacked on it.
 
 ## Install and login
 

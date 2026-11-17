@@ -11,8 +11,18 @@
 //               type: name|null, parent: number|null, comments: [{author, body}],
 //               pull: true when the number is a pull request, as GitHub's issues API returns them}],
 //     pulls: [{number, state: "MERGED"|"OPEN"|"CLOSED", closes: [issue numbers],
-//              head, title, body}],   a pull with a body closes what GitHub would:
+//              head, title, body,     a pull with a body closes what GitHub would:
 //                                     closing words in the body, and issues its branch is linked to
+//              checks: [statusCheckRollup entries], reviewDecision, mergeable, mergeState,
+//              behind: commits on main the head lacks, pendingReview: true when the viewer has one,
+//              threads: [{id, resolved, outdated, path, line, comments: [{id, author, body}]}],
+//              comments: [{id, author, body}] on the conversation, reviews: [{id, author, state, body}],
+//              blockedBy: the message GitHub gives when a rule blocks the merge}],
+//     mergeMethods: {merge, squash, rebase} (all true by default),
+//
+// With the full+json media type (`-H 'Accept: application/vnd.github.full+json'`),
+// REST results add `body_html`, and GraphQL gives `bodyHTML`, as GitHub does.
+// Each attached image becomes a signed private-user-images URL there.
 //     linkedBranches: {"<issue number>": [branch names]},
 //     calls: [[...argv]] }
 //
@@ -91,8 +101,9 @@ function requireRepo(repo) {
   }
 }
 
-function rest(issue) {
+function rest(issue, full) {
   return {
+    ...(full ? { body_html: renderHtml(issue.body) } : {}),
     id: issue.id,
     number: issue.number,
     title: issue.title,
@@ -134,6 +145,25 @@ function closesOf(pull) {
   }
   return [...found].filter((n) => state.issues.some((i) => i.number === n && !i.pull)).sort((a, b) => a - b);
 }
+
+// GitHub's rendering of a body, reduced to what Cairn reads: hidden
+// comments are dropped, and each attached image, as an <img> tag or as
+// Markdown, gets a signed URL with an escaped query, as GitHub serves it.
+function renderHtml(body) {
+  const signed = (url) => `https://private-user-images.githubusercontent.com/1/${url.split('/').pop()}.png?jwt=fake&amp;v=1`;
+  let html = String(body || '').replace(/<!--[\s\S]*?-->/g, '');
+  html = html.replace(/<img\b[^>]*>/gi, (tag) => {
+    const src = (/src="([^"]*)"/.exec(tag) || [])[1] || '';
+    const alt = (/alt="([^"]*)"/.exec(tag) || [])[1] || '';
+    return `<a href="${signed(src)}"><img alt="${alt}" src="${signed(src)}"></a>`;
+  });
+  html = html.replace(/!\[([^\]]*)\]\(([^)]+)\)/g, (_, alt, src) => `<a href="${signed(src)}"><img alt="${alt}" src="${signed(src)}"></a>`);
+  return `<p>${html.trim()}</p>`;
+}
+
+// A stable time for a seeded comment that has none: comment ids are in
+// the order comments were made, so times follow them.
+const timeOf = (c) => c.at || new Date(Date.UTC(2026, 0, 1) + Number(c.id) * 60000).toISOString();
 
 const pullUrl = (n) => `https://github.com/${state.repo}/pull/${n}`;
 
@@ -179,6 +209,11 @@ function parseApiFlags(args) {
     else if (a === '--input') out.input = args[++i];
     else if (a === '--paginate') out.paginate = true;
     else if (a === '--slurp') out.slurp = true;
+    else if (a === '-H' || a === '--header') {
+      const h = args[++i];
+      if (h !== 'Accept: application/vnd.github.full+json') unsupported(`api header ${h}`);
+      out.full = true;
+    }
     else if (a === '-f' || a === '-F' || a === '--raw-field' || a === '--field') {
       const [k, ...v] = args[++i].split('=');
       out.fields[k] = a === '-F' && /^\d+$/.test(v.join('=')) ? Number(v.join('=')) : v.join('=');
@@ -202,7 +237,15 @@ if (group === 'repo' && cmd === 'view') {
   const opts = parseGhFlags(rest_);
   requireLogin();
   requireRepo(opts._[0]);
-  const view = { nameWithOwner: state.repo, viewerPermission: state.permission, hasIssuesEnabled: state.issuesEnabled !== false };
+  const methods = { merge: true, squash: true, rebase: true, ...(state.mergeMethods || {}) };
+  const view = {
+    nameWithOwner: state.repo,
+    viewerPermission: state.permission,
+    hasIssuesEnabled: state.issuesEnabled !== false,
+    mergeCommitAllowed: methods.merge,
+    squashMergeAllowed: methods.squash,
+    rebaseMergeAllowed: methods.rebase,
+  };
   json(Object.fromEntries(opts.json.split(',').map((f) => [f, view[f]])));
 }
 
@@ -247,8 +290,11 @@ if (group === 'issue' && cmd === 'develop') {
 }
 
 if (group === 'pr') {
-  if (!['list', 'create', 'edit', 'view'].includes(cmd)) unsupported('command');
-  const opts = parsePairs(rest_);
+  if (!['list', 'create', 'edit', 'view', 'merge'].includes(cmd)) unsupported('command');
+  const opts = parsePairs(rest_, ['--merge', '--squash', '--rebase']);
+  for (const never of ['admin', 'auto', 'delete-branch']) {
+    if (rest_.includes(`--${never}`)) unsupported(`flag --${never}, which Cairn must never pass`);
+  }
   requireLogin();
   requireRepo(opts.repo);
   const findPull = (n) => {
@@ -283,8 +329,38 @@ if (group === 'pr') {
 
   if (cmd === 'view') {
     const pull = findPull(opts._[0]);
-    const view = { number: pull.number, url: pullUrl(pull.number), closingIssuesReferences: closesOf(pull).map((number) => ({ number })) };
+    const view = {
+      number: pull.number,
+      url: pullUrl(pull.number),
+      state: pull.state,
+      createdAt: pull.opened || '2026-01-01T00:00:00.000Z',
+      headRefName: pull.head,
+      closingIssuesReferences: closesOf(pull).map((number) => ({ number })),
+      statusCheckRollup: pull.checks || [],
+      reviewDecision: pull.reviewDecision || '',
+      mergeable: pull.mergeable || 'MERGEABLE',
+      mergeStateStatus: pull.mergeState || 'CLEAN',
+      mergeCommit: pull.mergeCommit ? { oid: pull.mergeCommit } : null,
+    };
     json(Object.fromEntries(opts.json.split(',').map((f) => [f, view[f]])));
+  }
+
+  if (cmd === 'merge') {
+    const pull = findPull(opts._[0]);
+    const method = ['merge', 'squash', 'rebase'].filter((m) => opts[m]);
+    if (method.length !== 1) done('', 1, '--merge, --rebase, or --squash required when not running interactively\n');
+    if (!atLeast('WRITE')) done('', 1, 'GraphQL: Resource not accessible by integration (mergePullRequest)\n');
+    if (pull.state === 'MERGED') done('', 1, `Pull request ${state.repo}#${pull.number} was already merged\n`);
+    if (pull.blockedBy) done('', 1, `X Pull request ${state.repo}#${pull.number} is not mergeable: ${pull.blockedBy}\n`);
+    if (pull.mergeable === 'CONFLICTING') done('', 1, `X Pull request ${state.repo}#${pull.number} is not mergeable: the merge commit cannot be cleanly created.\n`);
+    pull.state = 'MERGED';
+    pull.mergedWith = method[0];
+    pull.mergeCommit = 'c0ffee0000000000000000000000000000000000';
+    for (const n of closesOf(pull)) {
+      const issue = state.issues.find((i) => i.number === n);
+      if (issue) issue.state = 'CLOSED';
+    }
+    done(`✓ Merged pull request ${state.repo}#${pull.number}\n`);
   }
 
   unsupported('command');
@@ -314,12 +390,61 @@ if (group === 'api') {
         .map((p) => ({ number: p.number, url: `https://github.com/${state.repo}/pull/${p.number}`, state: p.state }));
       json({ data: { repository: { issue: { closedByPullRequestsReferences: { nodes } } } } });
     }
+    // One review thread by its global id, and a reply in it.
+    const threadById = (id) => {
+      for (const pull of state.pulls) {
+        const th = (pull.threads || []).find((x) => x.id === id);
+        if (th) return { pull, th };
+      }
+      return null;
+    };
+    const threadComment = (pull, c) => ({ databaseId: c.id, url: `${pullUrl(pull.number)}#discussion_r${c.id}`, body: c.body });
+    if (/PullRequestReviewThread/.test(q) && /node\(id/.test(q)) {
+      const found = threadById(opts.fields.id);
+      if (!found) done('', 1, `gh: Could not resolve to a node with the global id of '${opts.fields.id}'.\n`);
+      const { pull, th } = found;
+      json({ data: { node: { id: th.id, isResolved: !!th.resolved, pullRequest: { number: pull.number, repository: { nameWithOwner: pull.repo || state.repo } }, comments: { nodes: th.comments.slice(-1).map((c) => threadComment(pull, c)) } } } });
+    }
+    if (/addPullRequestReviewThreadReply/.test(q)) {
+      const found = threadById(opts.fields.id);
+      if (!found) done('', 1, `gh: Could not resolve to a node with the global id of '${opts.fields.id}'.\n`);
+      const { pull, th } = found;
+      const c = { id: state.nextCommentId++, author: state.login, body: opts.fields.body };
+      th.comments.push(c);
+      json({ data: { addPullRequestReviewThreadReply: { comment: threadComment(pull, c) } } });
+    }
+    if (/resolveReviewThread|dismissPullRequestReview/.test(q)) unsupported('graphql mutation that Cairn must never run');
+    if (/reviewThreads/.test(q)) {
+      requireRepo(`${opts.fields.owner}/${opts.fields.name}`);
+      const pull = state.pulls.find((p) => p.number === Number(opts.fields.number));
+      if (!pull) done('', 1, `gh: Could not resolve to a PullRequest with the number of ${opts.fields.number}.\n`);
+      const nodes = (pull.threads || []).map((th) => ({
+        id: th.id,
+        isResolved: !!th.resolved,
+        isOutdated: !!th.outdated,
+        path: th.path || null,
+        line: th.line === undefined ? null : th.line,
+        comments: { nodes: th.comments.map((c) => ({ databaseId: c.id, author: { login: c.author }, body: c.body, bodyHTML: renderHtml(c.body), url: `${pullUrl(pull.number)}#discussion_r${c.id}`, createdAt: timeOf(c) })) },
+      }));
+      const reviews = (pull.reviews || []).map((r) => ({ databaseId: r.id, author: { login: r.author }, state: r.state, body: r.body, bodyHTML: renderHtml(r.body), url: `${pullUrl(pull.number)}#pullrequestreview-${r.id}`, submittedAt: timeOf(r) }));
+      const comments = (pull.comments || []).map((c) => ({ databaseId: c.id, author: { login: c.author }, body: c.body, bodyHTML: renderHtml(c.body), url: `${pullUrl(pull.number)}#issuecomment-${c.id}`, createdAt: timeOf(c) }));
+      json({ data: { repository: { pullRequest: { pending: { totalCount: pull.pendingReview ? 1 : 0 }, reviews: { nodes: reviews }, comments: { nodes: comments }, reviewThreads: { nodes } } } } });
+    }
     unsupported('graphql query');
   }
 
   const [pathPart, queryPart = ''] = opts.path.split('?');
   const query = Object.fromEntries(new URLSearchParams(queryPart));
-  const restComment = (issue, c) => ({ id: c.id, body: c.body, user: { login: c.author }, html_url: `https://github.com/${state.repo}/issues/${issue.number}#issuecomment-${c.id}` });
+  const restComment = (issue, c) => ({ ...(opts.full ? { body_html: renderHtml(c.body) } : {}), id: c.id, body: c.body, user: { login: c.author }, html_url: `https://github.com/${state.repo}/issues/${issue.number}#issuecomment-${c.id}`, created_at: timeOf(c) });
+
+  const compare = /^repos\/([^/]+\/[^/]+)\/compare\/([^.]+)\.\.\.(.+)$/.exec(pathPart);
+  if (compare && opts.method === 'GET') {
+    requireRepo(compare[1]);
+    const head = decodeURIComponent(compare[3]);
+    const pull = state.pulls.find((p) => p.head === head && p.state === 'OPEN');
+    if (!pull) httpError(404, 'Not Found');
+    json({ behind_by: pull.behind || 0, ahead_by: 1, status: pull.behind ? 'diverged' : 'ahead' });
+  }
 
   const editComment = /^repos\/([^/]+\/[^/]+)\/issues\/comments\/(\d+)$/.exec(pathPart);
   if (editComment && opts.method === 'PATCH') {
@@ -369,7 +494,7 @@ if (group === 'api') {
     json(rest(issue));
   }
 
-  if (number && !sub && opts.method === 'GET') json(rest(findIssue(number)));
+  if (number && !sub && opts.method === 'GET') json(rest(findIssue(number), opts.full));
 
   if (number && !sub && opts.method === 'PATCH') {
     const issue = findIssue(number);

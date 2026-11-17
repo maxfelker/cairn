@@ -4,7 +4,8 @@
 // shares it, and the same state always gives the same step. Phrasing and
 // judgment stay in the skill.
 //
-//   node next.js <get-item.json>   (use - to read it from stdin)
+//   node next.js <get-item.json> [--change <get-change.json>]
+//                                  (use - to read the get-item result from stdin)
 //   exit 0  {"ok": true, "step": "...", "item": {id, title, kind}, "reason": "..."}
 //   exit 1  the get-item result itself, when it was a failure
 //   exit 2  wrong usage, or input that is not a get-item result
@@ -17,6 +18,8 @@
 //                   the first child, in order
 //   finish-feature  a feature whose children are all closed
 //   release         an epic whose features are all closed
+//   address-feedback a feature, task, or bug whose open change has feedback
+//                   Cairn has not answered (needs --change)
 //   continue-change a feature, task, or bug with an open change
 //   implement       a task or bug with no open change, or an item with no kind
 
@@ -27,10 +30,45 @@ const architecture = require('./architecture.js');
 
 const PARENT_KINDS = { epic: 'feature', feature: 'task' };
 
-function nextStep({ item, children = [], changes = [], comments = [] }) {
+const later = (a, b) => (a || '') > (b || '');
+const lastCairn = (comments) => comments.filter((c) => c.cairn).map((c) => c.at).sort().pop() || null;
+
+// Feedback Cairn has not answered yet, read from the record alone:
+// - a review thread that is not resolved, whose newest comment is not Cairn's;
+// - a comment or review summary on the change, newer than Cairn's last
+//   comment there;
+// - a comment on the item, made after the change opened and after Cairn's
+//   last comment on the item. Earlier discussion was the input to the work.
+function unanswered(itemComments, change) {
+  const threads = (change.threads || []).filter((t) => !t.resolved && t.comments.length && !t.comments[t.comments.length - 1].cairn);
+  const onChange = [...(change.comments || []), ...(change.reviews || [])];
+  const changeCursor = lastCairn(change.comments || []);
+  const fromChange = onChange.filter((c) => !c.cairn && later(c.at, changeCursor));
+  const itemCursor = [lastCairn(itemComments), change.change.opened].filter(Boolean).sort().pop() || null;
+  const fromItem = itemComments.filter((c) => !c.cairn && later(c.at, itemCursor));
+  return { threads: threads.length, comments: fromChange.length + fromItem.length };
+}
+
+function plural(n, word) {
+  return `${n} unanswered ${word}${n === 1 ? '' : 's'}`;
+}
+
+function nextStep({ item, children = [], changes = [], comments = [] }, change = null) {
   const self = { id: item.id, title: item.title, kind: item.kind };
   const step = (name, reason, target = self) => ({ ok: true, step: name, item: target, reason });
   const ref = (i) => `#${i.id} "${i.title}"`;
+
+  // An open change continues, unless it has feedback to answer first.
+  const continueChange = (open) => {
+    if (change && change.change && change.change.id === open.id) {
+      const u = unanswered(comments, change);
+      if (u.threads || u.comments) {
+        const parts = [u.threads && plural(u.threads, 'review thread'), u.comments && plural(u.comments, 'comment')].filter(Boolean);
+        return step('address-feedback', `#${open.id}, the change for ${ref(item)}, has ${parts.join(' and ')}.`);
+      }
+    }
+    return step('continue-change', `${ref(item)} already has an open change, #${open.id}.`);
+  };
 
   if (item.state === 'closed') return step('done', `${ref(item)} is closed.`);
 
@@ -42,7 +80,7 @@ function nextStep({ item, children = [], changes = [], comments = [] }) {
     // A feature is built on one change. Once that change is open, the work
     // continues there, whichever task is next.
     const openChange = item.kind === 'feature' && changes.find((c) => c.state === 'open');
-    if (openChange) return step('continue-change', `${ref(item)} already has an open change, #${openChange.id}.`);
+    if (openChange) return continueChange(openChange);
 
     const open = children.find((c) => c.state !== 'closed');
     if (open && item.kind === 'epic') {
@@ -66,33 +104,51 @@ function nextStep({ item, children = [], changes = [], comments = [] }) {
   if (!item.kind) {
     return step('implement', `${ref(item)} has no kind, so it is treated as a single piece of work. Give it a kind to be sure.`);
   }
-  const change = changes.find((c) => c.state === 'open');
-  if (change) return step('continue-change', `${ref(item)} already has an open change, #${change.id}.`);
+  const open = changes.find((c) => c.state === 'open');
+  if (open) return continueChange(open);
   return step('implement', `${ref(item)} is an open ${item.kind} with no open change.`);
+}
+
+function readResult(file, what) {
+  try {
+    return { ok: true, value: JSON.parse(fs.readFileSync(file === '-' ? 0 : file, 'utf8')) };
+  } catch (err) {
+    process.stderr.write(`cannot read a ${what} result from ${file}: ${err.message}\n`);
+    return { ok: false };
+  }
 }
 
 function main(argv) {
   const [file, ...rest] = argv;
-  if (!file || rest.length) {
-    process.stderr.write('usage: next.js <get-item.json>   (use - for stdin)\n');
+  const withChange = rest.length === 2 && rest[0] === '--change';
+  if (!file || (rest.length && !withChange)) {
+    process.stderr.write('usage: next.js <get-item.json> [--change <get-change.json>]   (use - for stdin)\n');
     return 2;
   }
-  let result;
-  try {
-    result = JSON.parse(fs.readFileSync(file === '-' ? 0 : file, 'utf8'));
-  } catch (err) {
-    process.stderr.write(`cannot read a get-item result from ${file}: ${err.message}\n`);
-    return 2;
+  const read = readResult(file, 'get-item');
+  if (!read.ok) return 2;
+  const result = read.value;
+  let change = null;
+  if (withChange) {
+    const c = readResult(rest[1], 'get-change');
+    if (!c.ok) return 2;
+    change = c.value;
   }
-  if (result && result.ok === false) {
-    process.stdout.write(`${JSON.stringify(result)}\n`);
-    return 1;
+  for (const r of [result, change]) {
+    if (r && r.ok === false) {
+      process.stdout.write(`${JSON.stringify(r)}\n`);
+      return 1;
+    }
   }
   if (!result || !result.item || !result.item.id) {
     process.stderr.write('the input is not a get-item result: it has no item\n');
     return 2;
   }
-  process.stdout.write(`${JSON.stringify(nextStep(result))}\n`);
+  if (change && (!change.change || !change.change.id)) {
+    process.stderr.write('the --change input is not a get-change result: it has no change\n');
+    return 2;
+  }
+  process.stdout.write(`${JSON.stringify(nextStep(result, change))}\n`);
   return 0;
 }
 
@@ -100,4 +156,4 @@ if (require.main === module) {
   process.exitCode = main(process.argv.slice(2));
 }
 
-module.exports = { nextStep };
+module.exports = { nextStep, unanswered };

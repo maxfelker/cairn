@@ -70,7 +70,7 @@ for (const { file, mod } of providers) {
     const emptyPath = fs.mkdtempSync(path.join(os.tmpdir(), 'cairn-path-'));
     const draft = path.join(cwd, 'draft.md');
     fs.writeFileSync(draft, '# A title\n\nA body.\n');
-    const sampleArgs = { comment: ['--on', '1', '--file', draft], 'find-item': ['--query', '#1'], 'get-item': ['--id', '1'], 'list-items': ['--kind', 'epic'], 'order-children': ['--parent', '1', '--ids', '2,3'], 'save-item': ['--kind', 'epic', '--file', draft], 'start-change': ['--for', '1'], 'save-change': ['--for', '1', '--file', draft] };
+    const sampleArgs = { comment: ['--on', '1', '--file', draft], 'find-item': ['--query', '#1'], 'get-item': ['--id', '1'], 'list-items': ['--kind', 'epic'], 'order-children': ['--parent', '1', '--ids', '2,3'], 'save-item': ['--kind', 'epic', '--file', draft], 'start-change': ['--for', '1'], 'save-change': ['--for', '1', '--file', draft], 'get-change': ['--id', '1'], 'get-image': ['--url', 'https://private-user-images.githubusercontent.com/1/a.png', '--out', emptyPath], reply: ['--on', 'PRRT_1', '--file', draft], 'merge-change': ['--id', '1', '--approved'] };
     for (const name of Object.keys(mod.commands)) {
       const r = spawnSync(process.execPath, [file, name, ...(sampleArgs[name] || [])], {
         cwd,
