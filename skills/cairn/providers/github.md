@@ -51,6 +51,7 @@ Run each one as `node "${CLAUDE_SKILL_DIR}/providers/github.js" <command>`.
 | `reply --on <thread> --file -` | GraphQL `node` read, then `addPullRequestReviewThreadReply` | The thread id is the `PRRT_…` id from `get-change`, and must be in this repository. Answer a pull request's conversation with `comment --on <n>` |
 | `merge-change --id <n> --approved` | `gh pr view`, `gh repo view` merge settings, `gh pr merge --merge` | A merge commit when allowed, else squash, else rebase. Never `--admin`, `--auto`, or `--delete-branch` |
 | `list-changes [--merged-since <tag>]` | `git tag`, `git ls-remote --tags` and `--heads`, `gh api` commit and check runs, `gh api` release by tag, `gh pr list --state merged --base main --search merged:>TIME`, `gh api` issue and parent | The tag's time is its commit's committer time. Checks are the commit's check runs, not commit statuses |
+| `publish-release --tag <v> --target <sha> --file - --approved [--draft]` | `gh release view`, `git tag`, `git ls-remote`, `gh api` check runs, `gh release create --target <sha> --notes-file -` | The tag and the release are made together, titled with the tag. A draft makes no tag until it is published on GitHub |
 
 How contract actions map to GitHub repository roles:
 
@@ -59,7 +60,7 @@ How contract actions map to GitHub repository roles:
 | `comment` | READ | |
 | `create-item` | READ | Issues turned on |
 | `label`, `link-child` | TRIAGE | Issues turned on |
-| `push`, `propose-change`, `merge` | WRITE | |
+| `push`, `propose-change`, `merge`, `release` | WRITE | |
 
 ## Changes
 

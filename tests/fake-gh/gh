@@ -301,6 +301,42 @@ if (group === 'issue' && cmd === 'develop') {
   done(`github.com/${state.repo}/tree/${name}\n`);
 }
 
+if (group === 'release') {
+  if (!['view', 'create'].includes(cmd)) unsupported('command');
+  const opts = parsePairs(rest_, ['--draft']);
+  for (const never of ['generate-notes', 'latest', 'verify-tag']) {
+    if (rest_.includes(`--${never}`)) unsupported(`flag --${never}`);
+  }
+  requireLogin();
+  requireRepo(opts.repo);
+  state.releases = state.releases || [];
+  const tag = opts._[0];
+
+  if (cmd === 'view') {
+    const release = state.releases.find((r) => r.tag === tag);
+    if (!release) done('', 1, 'release not found\n');
+    const view = { tagName: release.tag, url: releaseUrl(release.tag), isDraft: !!release.draft };
+    json(Object.fromEntries(opts.json.split(',').map((f) => [f, view[f]])));
+  }
+
+  if (cmd === 'create') {
+    if (!atLeast('WRITE')) done('', 1, 'HTTP 403: Resource not accessible by integration\n');
+    if (state.releases.some((r) => r.tag === tag)) done('', 1, 'HTTP 422: Validation Failed (tag_name already_exists)\n');
+    if (opts['notes-file'] !== '-') unsupported('notes not from stdin');
+    const release = { tag, target: opts.target, title: opts.title, notes: fs.readFileSync(0, 'utf8'), draft: !!opts.draft };
+    // GitHub makes the tag when the release is published, not for a draft.
+    if (!release.draft) {
+      try {
+        originGit('tag', tag, opts.target);
+      } catch {
+        done('', 1, `HTTP 422: Validation Failed (target_commitish invalid)\n`);
+      }
+    }
+    state.releases.push(release);
+    done(`${releaseUrl(tag)}\n`);
+  }
+}
+
 if (group === 'pr') {
   if (!['list', 'create', 'edit', 'view', 'merge'].includes(cmd)) unsupported('command');
   const opts = parsePairs(rest_, ['--merge', '--squash', '--rebase']);

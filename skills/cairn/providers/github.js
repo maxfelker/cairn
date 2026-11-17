@@ -103,6 +103,7 @@ const ACTIONS = {
   push: { level: 'WRITE', doing: 'pushing a branch' },
   'propose-change': { level: 'WRITE', doing: 'opening a pull request' },
   merge: { level: 'WRITE', doing: 'merging a pull request' },
+  release: { level: 'WRITE', doing: 'publishing a release' },
 };
 
 function rank(level) {
@@ -1146,6 +1147,83 @@ function listChanges({ exec = run, cwd, since } = {}) {
   return { ok: true, provider: PROVIDER, since: from, tags: base.tags, main: { ...base.main, checks }, changes, items };
 }
 
+// The release for a tag, published or draft, or null when there is none.
+// `gh release view` finds drafts too, which the REST tag lookup does not.
+function releaseFor(ctx, repo, tag) {
+  const r = ctx.exec('gh', ['release', 'view', tag, '--repo', repo, '--json', 'tagName,url,isDraft'], { cwd: ctx.cwd });
+  if (r.ok) {
+    const rel = JSON.parse(r.stdout);
+    return { ok: true, release: { tag: rel.tagName, url: rel.url, draft: rel.isDraft } };
+  }
+  if (/release not found/i.test(`${r.stderr}${r.stdout}`)) return { ok: true, release: null };
+  return { ok: false, result: ghFailed(r, `reading the release for ${tag}`) };
+}
+
+// Tag `main` and publish its release, only with the developer's approval,
+// and only on GitHub's `main` head when this clone's `main` matches it and
+// its checks passed. A tag that already exists is refused, never moved,
+// reused, or deleted. Publishing a tag that already has its release again
+// does nothing, so a re-run is safe. With `draft`, GitHub makes no tag
+// until the draft is published, which is how the flow is tried safely.
+function publishRelease({ exec = run, cwd, tag, commit, file, approved = false, draft = false } = {}) {
+  if (!approved) {
+    return fail('NOT_APPROVED', `${tag} was not released, because the release was not approved.`, 'Show the developer the version and notes, and run publish-release again with --approved after they say yes.');
+  }
+  const notes = readBody(file);
+  if (!notes.ok) return notes;
+  const t = target({ exec, cwd });
+  if (!t.ok) return t;
+  const repo = t.target;
+  const ctx = { exec, cwd };
+
+  const a = access({ exec, cwd, repo, action: 'release' });
+  if (!a.ok) return a;
+
+  const existing = releaseFor(ctx, repo, tag);
+  if (!existing.ok) return existing.result;
+  if (existing.release) {
+    if (existing.release.draft !== draft) {
+      const what = existing.release.draft ? 'a draft release' : 'a published release';
+      return fail('TAG_EXISTS', `${tag} already has ${what}: ${existing.release.url}`, existing.release.draft ? `Delete the draft on GitHub if it should be published differently, then ask again.` : 'Choose the next version instead.');
+    }
+    return { ok: true, provider: PROVIDER, release: existing.release, created: false };
+  }
+
+  const base = releaseBase(ctx, t);
+  if (!base.ok) return base.result;
+  const local = git(ctx, ['rev-parse', '--verify', '--quiet', `refs/tags/${tag}`]);
+  if (local.ok || base.remoteTags.has(tag)) {
+    return fail('TAG_EXISTS', `The tag ${tag} already exists ${local.ok ? 'in this clone' : `on ${t.remote}`}. Cairn never moves or reuses a tag.`, 'Choose the next version, or delete the tag yourself if it was made by mistake.');
+  }
+  if (!base.main.remote || commit !== base.main.remote) {
+    return fail('MAIN_MISMATCH', `${commit} is not the latest commit on ${BASE} on ${t.remote}${base.main.remote ? ` (${base.main.remote})` : ''}.`, `Run list-changes again, and release the ${BASE} commit it reports.`);
+  }
+  if (!base.main.match) {
+    return fail('MAIN_MISMATCH', `This clone's ${BASE} (${base.main.local || 'missing'}) does not match ${BASE} on ${t.remote} (${base.main.remote}).`, `Update the clone's ${BASE} with git pull while on ${BASE}, check the result, then ask again.`);
+  }
+  const checks = commitChecks(ctx, repo, commit);
+  if (!checks.ok) return failed(checks, `reading the checks on ${commit}`);
+  if (!['passed', 'none'].includes(checks.data.state)) {
+    const names = checks.data.runs.filter((r) => r.state !== 'passed').map((r) => `${r.name} (${r.state})`).join(', ');
+    return fail('CHECKS_FAILING', `The checks on ${BASE} have not all passed: ${names}.`, `Fix ${BASE}, or wait for its checks to finish, then ask again.`);
+  }
+
+  const args = ['release', 'create', tag, '--repo', repo, '--target', commit, '--title', tag, '--notes-file', '-'];
+  if (draft) args.push('--draft');
+  const made = exec('gh', args, { cwd, input: `${notes.text}\n` });
+  if (!made.ok) return ghFailed(made, `creating the release ${tag}`);
+  const after = releaseFor(ctx, repo, tag);
+  if (!after.ok) return after.result;
+  return { ok: true, provider: PROVIDER, release: after.release, created: true, checks: checks.data };
+}
+
+function publishReleaseArgs(args) {
+  const bare = ['--approved', '--draft'];
+  const f = flags(args.filter((x) => !bare.includes(x)), ['tag', 'target', 'file']);
+  if (!f || !SEMVER_TAG.test(f.tag || '') || !/^[0-9a-f]{40}$/.test(f.target || '') || !f.file) return null;
+  return publishRelease({ tag: f.tag, commit: f.target, file: f.file, approved: args.includes('--approved'), draft: args.includes('--draft') });
+}
+
 function listChangesArgs(args) {
   const f = flags(args, ['merged-since']);
   if (!f || (f['merged-since'] !== undefined && !f['merged-since'].trim())) return null;
@@ -1392,10 +1470,11 @@ const commands = {
   reply: replyArgs,
   'merge-change': mergeChangeArgs,
   'list-changes': listChangesArgs,
+  'publish-release': publishReleaseArgs,
 };
 
 if (require.main === module) {
   process.exitCode = cli(commands, process.argv.slice(2));
 }
 
-module.exports = { name: PROVIDER, commands, marker, comment, actions: ACTIONS, kinds: KIND_LABELS, parseRemote, target, auth, access, check, findItem, getItem, listItems, orderChildren, saveItem, startChange, pushChange, saveChange, getChange, getImage, reply, mergeChange, listChanges, latestTag, imagesOf, isCairn, checksOf, withLinks };
+module.exports = { name: PROVIDER, commands, marker, comment, actions: ACTIONS, kinds: KIND_LABELS, parseRemote, target, auth, access, check, findItem, getItem, listItems, orderChildren, saveItem, startChange, pushChange, saveChange, getChange, getImage, reply, mergeChange, listChanges, publishRelease, latestTag, imagesOf, isCairn, checksOf, withLinks };
