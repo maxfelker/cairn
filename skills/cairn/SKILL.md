@@ -554,19 +554,50 @@ These rules have no exceptions:
    unit for a choice the items do not settle. Do not post a comment for
    each task. The pushed commits show the work.
 6. **Open the change.** When every task is built and the checks pass,
-   draft the description. The first line is `# <title>`, a short statement
-   of what the change does. Then use these sections, in the plain style of
-   **Comments**:
+   draft the description. A reviewer, a product manager, and another agent
+   must each understand the change from it, without the session and
+   without reading the code first. Write it in the plain style of
+   **Comments**.
 
    ```markdown
+   # <title: what the change does, as a short statement>
+
+   <The bottom line: one to three sentences on what a person who uses the
+   product can do now, or what is different for them.>
+
    ## What changed
+   ## Highlights
+   ## How to test
    ## How it was validated
    ## Trade-offs and follow-up
    ```
 
+   - **The opening** is for the reader who stops there. Say the effect on
+     the user first. Do not start with file names or internal parts.
+   - **What changed** explains the change in paragraphs, in terms a user
+     understands: what was true before, what is true now, and why. Name
+     code only where it helps the reviewer.
+   - **Highlights** is optional. It is a short list of the details worth
+     knowing, one line each. It sums up the explanation. It does not
+     replace it.
+   - **How to test** gives test cases a person or an agent can follow:
+     what to do, and what to expect.
+     - A command-line change: the exact commands in a code block, each
+       with the output or result to expect.
+     - A change people see: a screenshot of the result, with the steps to
+       reach it. When you cannot attach a screenshot, say so, describe
+       what the reader will see, and ask the user to add one.
+     - An API or library change: a short call and its result.
+   - **How it was validated** says what you ran and what happened,
+     including anything that failed or was not run.
+   - **Trade-offs and follow-up** says what the change leaves out, and
+     why.
+
    Describe the change as it is. Do not copy the plan from the items. Do
    not write the closing lines: the command adds them. Do not put a closing
    word before a reference to an item that stays open.
+
+   Pipe the draft to `structure.js change -` and fix every problem.
 
    Run `save-change --for <unit> --file -`. For a partial change, add
    `--partial --closes <ids>`, with the ids of the tasks this change

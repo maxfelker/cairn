@@ -366,3 +366,94 @@ test('comment: the CLI checks a comment with exit codes 0, 1, and 2', () => {
   assert.equal(run('Just text').status, 1);
   assert.equal(run('**Question:** Which zoom range?', '--for', 'Players').status, 2, 'only features take --for');
 });
+
+// Changes
+
+const { checkChange } = require('../skills/cairn/structure.js');
+
+const GOOD_CHANGE = `# Let players zoom the map
+
+Players can now zoom the map with the plus and minus keys. The zoom stops at the edges of the map, so the view never shows empty space.
+
+## What changed
+
+Until now, the map had one fixed size. A player who wanted to see a whole region had to scroll across it.
+
+The camera now has a zoom level between 0.5 and 4.
+
+## Highlights
+
+- The plus and minus keys change the zoom by one step.
+- The zoom is clamped to the map edges.
+
+## How to test
+
+Run the game and press plus three times:
+
+\`\`\`
+npm start
+\`\`\`
+
+Expect the map to grow at each press and to stop at 4x.
+
+## How it was validated
+
+The unit tests pass.
+
+## Trade-offs and follow-up
+
+The mouse wheel does not zoom yet.
+`;
+
+const changeProblems = (text) => {
+  const result = checkChange(text);
+  assert.equal(result.ok, false, 'expected the change to be rejected');
+  return result.problems.join('\n');
+};
+
+test('change: a description with an opening, detail, and test steps passes', () => {
+  assert.deepEqual(checkChange(GOOD_CHANGE), { ok: true, kind: 'change', title: 'Let players zoom the map' });
+  const noHighlights = GOOD_CHANGE.replace(/## Highlights[\s\S]*?(?=## How to test)/, '');
+  assert.equal(checkChange(noHighlights).ok, true, 'Highlights is optional');
+  const shot = GOOD_CHANGE.replace(/\`\`\`[\s\S]*?\`\`\`/, '![The zoomed map](https://example.com/zoom.png)');
+  assert.equal(checkChange(shot).ok, true, 'a screenshot shows how to test a change people see');
+});
+
+test('change: the opening is the bottom line, in plain sentences', () => {
+  const noOpening = GOOD_CHANGE.replace(/Players can now zoom[^\n]*\n/, '');
+  assert.match(changeProblems(noOpening), /Open with the bottom line, before any heading/);
+  const listOpening = GOOD_CHANGE.replace(/Players can now zoom[^\n]*\n/, '- zoom keys\n- clamping\n');
+  assert.match(changeProblems(listOpening), /Write the opening as plain sentences, not as a list/);
+  const longOpening = GOOD_CHANGE.replace(/Players can now zoom[^\n]*\n/, 'One. Two. Three. Four. Five.\n');
+  assert.match(changeProblems(longOpening), /Shorten the opening\. It has 5 sentences, and the limit is 4/);
+  const wordy = GOOD_CHANGE.replace(/Players can now zoom[^\n]*\n/, `${Array.from({ length: 26 }, () => 'word').join(' ')}.\n`);
+  assert.match(changeProblems(wordy), /Split this sentence in the opening\. It has 26 words/);
+  assert.match(changeProblems(GOOD_CHANGE.replace('# Let players zoom the map\n', '')), /Start the draft with "# <title>"/);
+});
+
+test('change: the sections are present, in order, and not empty', () => {
+  for (const label of ['What changed', 'How to test', 'How it was validated', 'Trade-offs and follow-up']) {
+    const without = GOOD_CHANGE.replace(new RegExp(`## ${label}[\\s\\S]*?(?=\\n## |$)`), '');
+    assert.match(changeProblems(without), new RegExp(`Add a "## ${label}" section`), label);
+  }
+  const swapped = GOOD_CHANGE.replace('## How to test', '## X').replace('## How it was validated', '## How to test').replace('## X', '## How it was validated');
+  assert.match(changeProblems(swapped), /so the sections are in this order/);
+  assert.match(changeProblems(GOOD_CHANGE.replace('The unit tests pass.\n', '')), /"## How it was validated" is empty/);
+});
+
+test('change: the detail is prose first, and the test steps can be followed', () => {
+  const listFirst = GOOD_CHANGE.replace('Until now, the map had one fixed size.', '- The map had one fixed size.');
+  assert.match(changeProblems(listFirst), /Start "## What changed" with a paragraph/);
+  const noSteps = GOOD_CHANGE.replace(/\`\`\`[\s\S]*?\`\`\`/, 'Start the game.');
+  assert.match(changeProblems(noSteps), /Show how to test the change in "## How to test": the commands to run and the result to expect/);
+  const proseHighlights = GOOD_CHANGE.replace(/- The plus and minus keys[^\n]*\n- The zoom is clamped[^\n]*\n/, 'Zoom keys and clamping.\n');
+  assert.match(changeProblems(proseHighlights), /Write "## Highlights" as a short list/);
+  const codeInDetail = GOOD_CHANGE.replace('The camera now has a zoom level between 0.5 and 4.', `\`\`\`\n${Array.from({ length: 40 }, () => 'word').join(' ')}\n\`\`\``);
+  assert.equal(checkChange(codeInDetail).ok, true, 'a code block is not a sentence');
+});
+
+test('change: the CLI checks a change draft', () => {
+  const run = (input) => spawnSync(process.execPath, [SCRIPT, 'change', '-'], { input, encoding: 'utf8' });
+  assert.equal(run(GOOD_CHANGE).status, 0);
+  assert.equal(run('# Title only\n').status, 1);
+});
