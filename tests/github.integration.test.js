@@ -1270,3 +1270,135 @@ test('merge-change: missing access, an unknown change, a closed change, and wron
   assert.equal(gh.run('merge-change', '--id', '30', '--approved', 'yes').status, 2);
   assert.equal(ghCalls(gh, 'merge').length, 0);
 });
+
+// --- Releases ---
+
+const EARLY = '2000-01-01T00:00:00Z';
+const LATE = '2100-01-01T00:00:00Z';
+
+// A repository with a feature, its task, and an epic above them, and merged
+// pull requests: #20 before any tag, and #21, which closes the task and the
+// feature, after it.
+function releaseRepo(state = {}) {
+  return fakeGitHub({
+    issues: [
+      { number: 1, title: 'Epic', labels: ['epic'] },
+      { number: 2, title: 'A player can zoom', labels: ['feature'], parent: 1, state: 'CLOSED' },
+      { number: 3, title: 'Add the zoom control', labels: ['task'], parent: 2, state: 'CLOSED' },
+      { number: 4, title: 'Fix the minimap', labels: ['bug'], state: 'CLOSED' },
+    ],
+    pulls: [
+      { number: 20, state: 'MERGED', head: 'old', title: 'Fix the minimap', labels: ['bug'], mergedAt: EARLY, closes: [4] },
+      { number: 21, state: 'MERGED', head: '2-zoom', title: 'Zoom the map', mergedAt: LATE, closes: [2, 3] },
+      { number: 22, state: 'OPEN', head: 'wip', title: 'Not merged yet', closes: [] },
+      { number: 23, state: 'MERGED', head: 'side', base: 'release-1', title: 'Into another branch', mergedAt: LATE, closes: [] },
+    ],
+    ...state,
+  });
+}
+
+function setState(gh, change) {
+  const st = gh.state();
+  change(st);
+  fs.writeFileSync(gh.env.FAKE_GH_STATE, JSON.stringify(st));
+}
+
+test('list-changes: with no tags at all, every change merged into main is listed', () => {
+  const gh = releaseRepo();
+  const { status, json } = gh.run('list-changes');
+  assert.equal(status, 0, JSON.stringify(json));
+  assert.equal(json.since, null);
+  assert.deepEqual(json.tags, { local: null, remote: null, match: true });
+  assert.deepEqual(json.changes.map((c) => c.id), ['20', '21'], 'oldest first, merged into main only');
+  assert.deepEqual(json.changes[0].labels, ['bug']);
+  assert.deepEqual(json.changes[1].closes, ['2', '3']);
+});
+
+test('list-changes: from the latest tag, only later changes, with the items they closed and their parents', () => {
+  const gh = releaseRepo();
+  gh.git('tag', 'v0.1.0');
+  gh.git('tag', 'v0.2.0');
+  gh.git('tag', 'not-a-version');
+  gh.git('push', '-q', 'origin', '--tags');
+  const { status, json } = gh.run('list-changes');
+  assert.equal(status, 0, JSON.stringify(json));
+  const head = gh.git('rev-parse', 'HEAD').trim();
+  assert.equal(json.since.tag, 'v0.2.0', 'the highest SemVer tag, ignoring others');
+  assert.equal(json.since.commit, head);
+  assert.match(json.since.at, /^\d{4}-\d\d-\d\dT/);
+  assert.equal(json.since.release, null);
+  assert.equal(json.tags.match, true);
+  assert.deepEqual(json.changes.map((c) => c.id), ['21']);
+  assert.deepEqual(json.items, [
+    { id: '2', url: 'https://github.com/octo/repo/issues/2', title: 'A player can zoom', kind: 'feature', state: 'closed', parent: '1' },
+    { id: '3', url: 'https://github.com/octo/repo/issues/3', title: 'Add the zoom control', kind: 'task', state: 'closed', parent: '2' },
+  ]);
+  const search = gh.state().calls.find((c) => c[0] === 'pr' && c[1] === 'list');
+  assert.ok(search.includes(`merged:>${json.since.at}`), 'GitHub filters by merge time');
+});
+
+test('list-changes: a tag with a release links it, and --merged-since starts from an older tag', () => {
+  const gh = releaseRepo({ releases: [{ tag: 'v0.1.0' }] });
+  gh.git('tag', '-a', 'v0.1.0', '-m', 'v0.1.0');
+  gh.commit('b.txt', 'b', 'Second');
+  gh.git('push', '-q', 'origin', 'main', '--tags');
+  gh.git('tag', 'v0.2.0');
+  gh.git('push', '-q', 'origin', 'v0.2.0');
+
+  const json = gh.run('list-changes', '--merged-since', 'v0.1.0').json;
+  assert.equal(json.since.tag, 'v0.1.0');
+  assert.equal(json.since.commit, gh.git('rev-parse', 'HEAD~1').trim(), 'an annotated tag reports its commit');
+  assert.equal(json.since.release, 'https://github.com/octo/repo/releases/tag/v0.1.0');
+  assert.equal(json.tags.remote.tag, 'v0.2.0');
+});
+
+test('list-changes: tags that differ here and on GitHub are reported, not fixed', () => {
+  const gh = releaseRepo();
+  gh.git('tag', 'v0.1.0');
+  gh.git('push', '-q', 'origin', 'v0.1.0');
+  gh.git('tag', 'v0.2.0');
+  const json = gh.run('list-changes').json;
+  assert.deepEqual(json.tags.local, { tag: 'v0.2.0', commit: gh.git('rev-parse', 'HEAD').trim() });
+  assert.equal(json.tags.remote.tag, 'v0.1.0');
+  assert.equal(json.tags.match, false);
+  assert.equal(json.since.tag, 'v0.1.0', 'starts from the tag on GitHub');
+  assert.ok(!gh.gitCalls().some((l) => /^(push|fetch)/.test(l)), 'nothing is pushed or fetched');
+});
+
+test('list-changes: a local main behind GitHub, and main\'s checks', () => {
+  const gh = releaseRepo();
+  const other = gh.other();
+  fs.writeFileSync(path.join(other.cwd, 'c.txt'), 'c');
+  other.git('add', 'c.txt');
+  other.git('commit', '-q', '-m', 'Someone else merged');
+  other.git('push', '-q', 'origin', 'main');
+  const remote = other.git('rev-parse', 'HEAD').trim();
+  setState(gh, (st) => {
+    st.checkRuns = { [remote]: [{ name: 'validate', status: 'completed', conclusion: 'failure' }, { name: 'lint', status: 'completed', conclusion: 'success' }] };
+  });
+
+  const json = gh.run('list-changes').json;
+  assert.equal(json.main.local, gh.git('rev-parse', 'HEAD').trim());
+  assert.equal(json.main.remote, remote);
+  assert.equal(json.main.match, false);
+  assert.equal(json.main.checks.state, 'failed');
+  assert.deepEqual(json.main.checks.runs, [{ name: 'validate', state: 'failed' }, { name: 'lint', state: 'passed' }]);
+});
+
+test('list-changes: passing and missing checks, an unknown tag, and wrong usage', () => {
+  const gh = releaseRepo();
+  const head = gh.git('rev-parse', 'HEAD').trim();
+  let json = gh.run('list-changes').json;
+  assert.equal(json.main.match, true);
+  assert.equal(json.main.checks.state, 'none');
+  setState(gh, (st) => { st.checkRuns = { [head]: [{ name: 'validate', status: 'completed', conclusion: 'success' }] }; });
+  assert.equal(gh.run('list-changes').json.main.checks.state, 'passed');
+  setState(gh, (st) => { st.checkRuns = { [head]: [{ name: 'validate', status: 'in_progress', conclusion: null }] }; });
+  assert.equal(gh.run('list-changes').json.main.checks.state, 'pending');
+
+  json = gh.run('list-changes', '--merged-since', 'v9.9.9').json;
+  assert.equal(json.code, 'TARGET_UNAVAILABLE');
+  assert.match(json.message, /v9\.9\.9 is not on origin/);
+  assert.equal(gh.run('list-changes', '--merged-since').status, 2);
+  assert.equal(gh.run('list-changes', 'v1').status, 2);
+});

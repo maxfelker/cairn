@@ -39,6 +39,7 @@ contract. A new provider is done when it passes.
 | `get-image --url <url> --out <folder>` | Let me look at an image attached to an item or a change. Downloads one URL from an `images` list into a folder outside the repository | `path`, `type`, `bytes` |
 | `reply --on <thread> --file <text\|->` | Answer one review thread as Cairn, in the thread. Never resolves it. Sending the same reply again posts nothing | `comment` (`id`, `url`), `change`, `created` |
 | `merge-change --id <change> --approved` | Merge a change the developer approved. Refuses to run without `--approved`, never bypasses the provider's rules, and keeps the branch. Merging a merged change again does nothing | `change` (`id`, `url`), `merged` (false when it was already merged), `method`, `commit` |
+| `list-changes [--merged-since <tag>]` | What would a release contain, and is `main` ready to tag? Reads only | `since` (`tag`, `commit`, `at`, `release`: the release's URL or null; null when there is no version tag yet), `tags` (`local` and `remote`, each `tag` and `commit` or null, and `match`), `main` (`local`, `remote`, `match`, and `checks` as in `get-change`), `changes` (merged into `main` after the tag, oldest first, each `id`, `url`, `title`, `labels`, `merged`, `closes`), `items` (the items those changes closed, each `id`, `url`, `title`, `kind`, `state`, `parent`) |
 
 Add a command here only when a feature first needs it. Then add it to every
 provider.
@@ -91,6 +92,19 @@ tests can check that nothing merges without it. A required check, review,
 or branch rule that blocks the merge fails with `PROTECTED`, and is never
 worked around. It checks access for `merge`. Feedback outside a thread is answered with
 `comment` on the change.
+
+## Releases
+
+A release is a version tag on `main` and the notes that describe it.
+`list-changes` gathers what the next release would contain. It starts from
+the latest SemVer tag on the provider, or from `--merged-since`, and lists
+every change merged into `main` after that tag's commit.
+
+**Differences are reported, not fixed.** `list-changes` compares the latest
+version tag in the clone with the one on the provider, and the clone's
+`main` with the provider's. It never fetches, pushes, or moves a tag to make
+them agree: the developer decides. A `--merged-since` tag that is not on the
+provider fails with `TARGET_UNAVAILABLE`.
 
 ## Times
 

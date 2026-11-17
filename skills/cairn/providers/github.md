@@ -50,6 +50,7 @@ Run each one as `node "${CLAUDE_SKILL_DIR}/providers/github.js" <command>`.
 | `get-image --url <url> --out <folder>` | Node `fetch` in a child process, with no token | Only `https` URLs on `*.githubusercontent.com` or `github.com/user-attachments` |
 | `reply --on <thread> --file -` | GraphQL `node` read, then `addPullRequestReviewThreadReply` | The thread id is the `PRRT_…` id from `get-change`, and must be in this repository. Answer a pull request's conversation with `comment --on <n>` |
 | `merge-change --id <n> --approved` | `gh pr view`, `gh repo view` merge settings, `gh pr merge --merge` | A merge commit when allowed, else squash, else rebase. Never `--admin`, `--auto`, or `--delete-branch` |
+| `list-changes [--merged-since <tag>]` | `git tag`, `git ls-remote --tags` and `--heads`, `gh api` commit and check runs, `gh api` release by tag, `gh pr list --state merged --base main --search merged:>TIME`, `gh api` issue and parent | The tag's time is its commit's committer time. Checks are the commit's check runs, not commit statuses |
 
 How contract actions map to GitHub repository roles:
 
