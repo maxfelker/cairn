@@ -32,6 +32,9 @@ contract. A new provider is done when it passes.
 | `list-items --kind <kind>` | Which open items of this kind exist? | `items` (each `id`, `url`, `title`) |
 | `order-children --parent <id> --ids <id,id,…>` | Put these children first, in this order (others keep their order after them) | `order`, `moved` (0 when already in order) |
 | `save-item --kind <kind> --file <draft> [--parent <id>]` | Create a work item, or update the open one of that kind with exactly that title. With a parent, match among its children, and link a new item under it | `created`, `item` (`id`, `url`, `title`), and with a parent: `parent`, `linked` |
+| `start-change --for <id> [--partial <name>]` | Start the work on an item, or go back to it. Makes one branch for the item from the latest `main`, linked to the item, or switches to the branch the item already has. With `--partial`, the change delivers only part of the item: the branch is plain, named `<id>-<name>`, and not linked | `branch`, `created`, `linked` |
+| `push-change` | Push the current change branch. Never `main`, and never with force | `branch`, `pushed` (false when the provider already has every commit) |
+| `save-change --for <id> --file <draft> [--partial [--closes <id,id,…>]]` | Put the current branch up for review: open its change, or update the one already open. The command ends the description with the closing references, then checks what the provider will close | `change` (`id`, `url`), `created`, `closes` (the ids it closes on merge) |
 
 Add a command here only when a feature first needs it. Then add it to every
 provider.
@@ -43,6 +46,36 @@ parent) before it changes anything.
 Providers record the kind natively where they can (an issue type or work
 item type), and fall back to a label or category otherwise. Results report
 which with `via`.
+
+## Changes
+
+A change is a branch, its pushed commits, and the request to review and
+merge it, such as a pull request. The three change commands keep the rules
+that protect other people's work in code:
+
+- **One branch per item, from the latest `main`.** `start-change` reuses
+  the item's branch when it exists, in the clone or on the provider.
+  Running it twice never makes a second branch.
+- **A dirty working tree is refused.** If the clone has uncommitted changes
+  and is not already on the item's branch, `start-change` fails with
+  `DIRTY_TREE` and changes nothing. It never stashes or discards.
+- **`main` is never pushed or proposed, and nothing is force-pushed.**
+  `push-change` and `save-change` fail with `NOT_ON_CHANGE` on `main`. A
+  push the provider rejects is reported, not retried.
+- **A linked branch closes its item.** Link the branch only when the
+  change finishes the item. Use `--partial` for a change that delivers
+  part of it.
+- **The command writes the closing references.** `save-change` closes the
+  item and its open children by default. With `--partial`, the description
+  says the change is part of the item, and closes only the ids in
+  `--closes`. It then reads back what the provider will close, and fails
+  with `CLOSES_MISMATCH` when that differs. The change stays open, and the
+  failure carries `change` and the `closes` the provider reported.
+
+`save-change` checks access for `propose-change`, and the other two check
+`push`, before they change anything.
+
+## Comments
 
 Every Cairn comment ends with a hidden marker, `<!-- cairn -->`, or
 `<!-- cairn key=<key> -->` with a key. That is how people and tools tell
@@ -90,7 +123,11 @@ Tokens, token sources, and scopes never appear in output.
 | `FEATURE_DISABLED` | The target has the needed feature turned off, such as issues. |
 | `UNKNOWN_ACTION` | The provider does not know the requested action. |
 | `INVALID_DRAFT` | The draft file cannot be read, or has no `# <title>` line. |
-| `PROVIDER_ERROR` | The provider rejected a change. The message carries its error text. |
+| `DIRTY_TREE` | The working tree has uncommitted changes, and the clone is not on the item's branch. |
+| `NOT_ON_CHANGE` | The clone is on `main` or on no branch, where Cairn does not push or open a change. |
+| `NOT_PUSHED` | The branch is not on the provider yet, so no change can be opened for it. |
+| `CLOSES_MISMATCH` | The change would close items it does not deliver, or would not close one it does. |
+| `PROVIDER_ERROR` | The provider or git rejected a change. The message carries its error text. |
 
 ## Actions
 

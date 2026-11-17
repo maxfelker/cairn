@@ -9,6 +9,7 @@
 //   node structure.js <kind> <draft.md>   (use - to read the draft from stdin)
 //   node structure.js feature <draft.md> --for <who the epic is for>
 //   node structure.js comment <draft.md>   a comment has no "# <title>" line
+//   node structure.js change <draft.md>    the description of a change for review
 //   exit 0  {"ok": true, "kind": "...", "title": "..."}
 //   exit 1  {"ok": false, "kind": "...", "problems": ["..."]}
 //   exit 2  wrong usage
@@ -282,7 +283,76 @@ function checkComment(text) {
     : { ok: true, kind: 'comment', comment: kind.toLowerCase() };
 }
 
-const CHECKS = { epic: checkEpic, feature: checkFeature, task: checkTask, comment: checkComment };
+// The description of a change for review. It opens with the bottom line in
+// plain prose, for a reader who stops there. The detail follows, then how a
+// person or an agent can test the change and what they should see.
+const CHANGE_SECTIONS = [
+  { key: 'what', label: 'What changed', names: ['what changed'], required: true },
+  { key: 'highlights', label: 'Highlights', names: ['highlights'], required: false },
+  { key: 'test', label: 'How to test', names: ['how to test', 'how to test it'], required: true },
+  { key: 'validated', label: 'How it was validated', names: ['how it was validated', 'validation'], required: true },
+  { key: 'tradeoffs', label: 'Trade-offs and follow-up', names: ['trade-offs and follow-up', 'tradeoffs and follow-up', 'trade-offs and follow-ups', 'trade-offs'], required: true },
+];
+const MAX_OPENING_SENTENCES = 4;
+const LIST_LINE = /^\s*(?:[-*+]|\d+\.)\s/;
+const withoutCode = (lines) => lines.join('\n').replace(/```[\s\S]*?```/g, '');
+
+function longSentences(text, where) {
+  return sentences(text)
+    .filter((s) => s.split(' ').length > MAX_SENTENCE_WORDS)
+    .map((s) => `Split this sentence in ${where}. It has ${s.split(' ').length} words, and the limit is ${MAX_SENTENCE_WORDS}: "${s.slice(0, 60)}…"`);
+}
+
+function checkChange(text) {
+  const problems = [];
+  const { title, intro, sections } = parse(text);
+  if (!title) problems.push('Start the draft with "# <title>": a short statement of what the change does.');
+
+  const opening = intro.filter((l) => l.trim() !== '');
+  if (opening.length === 0) {
+    problems.push('Open with the bottom line, before any heading: one to three plain sentences on what the change does for the person who uses it.');
+  } else if (opening.some((l) => LIST_LINE.test(l) || /^\s*[|>#]/.test(l))) {
+    problems.push('Write the opening as plain sentences, not as a list, a table, or a quote.');
+  } else {
+    const count = sentences(opening.join('\n')).length;
+    if (count > MAX_OPENING_SENTENCES) problems.push(`Shorten the opening. It has ${count} sentences, and the limit is ${MAX_OPENING_SENTENCES}. Move the detail under "## What changed".`);
+    problems.push(...longSentences(opening.join('\n'), 'the opening'));
+  }
+
+  const found = {};
+  let last = -1;
+  for (const spec of CHANGE_SECTIONS) {
+    const at = sections.findIndex((sec) => spec.names.includes(sec.name));
+    if (at === -1) {
+      if (spec.required) problems.push(`Add a "## ${spec.label}" section.`);
+      continue;
+    }
+    if (at < last) problems.push(`Move "## ${spec.label}" so the sections are in this order: ${CHANGE_SECTIONS.map((c) => c.label).join(', ')}.`);
+    last = Math.max(last, at);
+    found[spec.key] = sections[at];
+    if (!sections[at].lines.some((l) => l.trim() !== '')) problems.push(`"## ${spec.label}" is empty.`);
+  }
+
+  if (found.what) {
+    const first = found.what.lines.find((l) => l.trim() !== '') || '';
+    if (LIST_LINE.test(first) || /^\s*\|/.test(first)) {
+      problems.push('Start "## What changed" with a paragraph that explains the change in terms a user understands. Keep lists for "## Highlights".');
+    }
+    problems.push(...longSentences(withoutCode(found.what.lines), '"## What changed"'));
+  }
+  if (found.highlights && !found.highlights.lines.some((l) => LIST_LINE.test(l))) {
+    problems.push('Write "## Highlights" as a short list: one line for each thing worth knowing.');
+  }
+  if (found.test && !/```[\s\S]*?```|!\[[^\]]*\]\([^)]+\)|<img\s/.test(found.test.lines.join('\n'))) {
+    problems.push('Show how to test the change in "## How to test": the commands to run and the result to expect, in a code block. For a change people see, add a screenshot.');
+  }
+
+  return problems.length
+    ? { ok: false, kind: 'change', problems }
+    : { ok: true, kind: 'change', title };
+}
+
+const CHECKS = { epic: checkEpic, feature: checkFeature, task: checkTask, comment: checkComment, change: checkChange };
 
 function main(argv) {
   const [kind, file, ...rest] = argv;
@@ -307,4 +377,4 @@ if (require.main === module) {
   process.exitCode = main(process.argv.slice(2));
 }
 
-module.exports = { parse, checkEpic, checkFeature, checkTask, checkComment, COMMENT_KINDS, criterionProblem, EPIC_SECTIONS, FEATURE_SECTIONS, TASK_SECTIONS };
+module.exports = { parse, checkEpic, checkFeature, checkTask, checkComment, checkChange, COMMENT_KINDS, CHANGE_SECTIONS, criterionProblem, EPIC_SECTIONS, FEATURE_SECTIONS, TASK_SECTIONS };

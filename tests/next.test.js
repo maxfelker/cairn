@@ -75,6 +75,30 @@ test('a task or bug with an open change continues it', () => {
   }
 });
 
+test('a feature with an open change continues it, whatever its tasks say', () => {
+  const tasks = [child('2', 'closed'), child('3', 'open')];
+  const r = nextStep({ item: item('feature'), children: tasks, changes: [{ id: '9', state: 'merged' }, { id: '10', state: 'open' }] });
+  assert.equal(r.step, 'continue-change');
+  assert.match(r.reason, /#10/);
+  assert.deepEqual(r.item, { id: '1', title: 'Item', kind: 'feature' }, 'the item stays the feature');
+
+  const allDone = nextStep({ item: item('feature'), children: [child('2', 'closed')], changes: [{ id: '10', state: 'open' }] });
+  assert.equal(allDone.step, 'continue-change', 'the change still has to merge');
+});
+
+test('a feature with only merged or closed changes follows its tasks', () => {
+  const past = [{ id: '9', state: 'merged' }, { id: '10', state: 'closed' }];
+  assert.equal(step({ item: item('feature'), children: [child('2', 'closed'), child('3', 'open')], changes: past }), 'work-on-child');
+  assert.equal(step({ item: item('feature'), children: [child('2', 'closed')], changes: past }), 'finish-feature');
+  assert.equal(step({ item: item('feature'), children: [], changes: [{ id: '10', state: 'open' }] }), 'break-down', 'no tasks still comes first');
+  assert.equal(step({ item: { ...item('feature'), state: 'closed' }, children: [child('2', 'open')], changes: [{ id: '10', state: 'open' }] }), 'done');
+});
+
+test('an epic ignores changes', () => {
+  const r = nextStep({ item: item('epic'), children: [child('2', 'closed', 'feature')], changes: [{ id: '10', state: 'open' }] });
+  assert.equal(r.step, 'release');
+});
+
 test('a task or bug with no open change is implemented', () => {
   for (const kind of ['task', 'bug']) {
     assert.equal(step({ item: item(kind), changes: [] }), 'implement', kind);

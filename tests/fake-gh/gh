@@ -10,8 +10,14 @@
 //     issues: [{number, id, title, body, state: "OPEN"|"CLOSED", labels: [name],
 //               type: name|null, parent: number|null, comments: [{author, body}],
 //               pull: true when the number is a pull request, as GitHub's issues API returns them}],
-//     pulls: [{number, state: "MERGED"|"OPEN"|"CLOSED", closes: [issue numbers]}],
+//     pulls: [{number, state: "MERGED"|"OPEN"|"CLOSED", closes: [issue numbers],
+//              head, title, body}],   a pull with a body closes what GitHub would:
+//                                     closing words in the body, and issues its branch is linked to
+//     linkedBranches: {"<issue number>": [branch names]},
 //     calls: [[...argv]] }
+//
+// `gh issue develop` runs real git in the current directory, against the
+// clone's own origin, as gh does.
 //
 // It models only what the adapter uses, with gh's real output and error text.
 // Database ids differ from issue numbers on purpose (id = number + 9000), so
@@ -21,6 +27,7 @@
 'use strict';
 
 const fs = require('node:fs');
+const { execFileSync } = require('node:child_process');
 
 const STATE = process.env.FAKE_GH_STATE;
 if (!STATE) {
@@ -39,6 +46,8 @@ state.nextCommentId = state.nextCommentId || 7001;
 for (const issue of state.issues) {
   issue.comments = issue.comments.map((c) => (c.id ? c : { ...c, id: state.nextCommentId++ }));
 }
+state.pulls = state.pulls || [];
+state.linkedBranches = state.linkedBranches || {};
 state.calls = state.calls || [];
 const argv = process.argv.slice(2);
 state.calls.push(argv);
@@ -111,6 +120,40 @@ function childrenOf(parentNumber) {
   return [...order, ...rest_].map((n) => kids.find((k) => k.number === n));
 }
 
+// The issues a pull request closes on merge. A seeded pull without a body
+// keeps its `closes` list. Otherwise GitHub's rules apply: a closing word
+// before a reference anywhere in the body, plus every issue the head branch
+// is linked to.
+function closesOf(pull) {
+  if (pull.body === undefined) return pull.closes || [];
+  const found = new Set();
+  const re = /\b(?:close[sd]?|fix(?:e[sd])?|resolve[sd]?):?\s+#(\d+)/gi;
+  for (let m = re.exec(pull.body); m; m = re.exec(pull.body)) found.add(Number(m[1]));
+  for (const [n, branches] of Object.entries(state.linkedBranches)) {
+    if (branches.includes(pull.head)) found.add(Number(n));
+  }
+  return [...found].filter((n) => state.issues.some((i) => i.number === n && !i.pull)).sort((a, b) => a - b);
+}
+
+const pullUrl = (n) => `https://github.com/${state.repo}/pull/${n}`;
+
+function git(...args) {
+  return execFileSync('git', args, { encoding: 'utf8', stdio: ['ignore', 'pipe', 'pipe'] });
+}
+
+// Flags for `gh issue` and `gh pr`: every flag here takes a value, except
+// the ones named in `bare`.
+function parsePairs(args, bare = []) {
+  const out = { _: [] };
+  for (let i = 0; i < args.length; i += 1) {
+    if (bare.includes(args[i])) out[args[i].replace(/^-+/, '')] = true;
+    else if (args[i].startsWith('--')) out[args[i].slice(2)] = args[++i];
+    else if (args[i] === '-R') out.repo = args[++i];
+    else out._.push(args[i]);
+  }
+  return out;
+}
+
 function readInput() {
   return JSON.parse(fs.readFileSync(0, 'utf8'));
 }
@@ -179,6 +222,74 @@ if (group === 'label' && cmd === 'create') {
   done(`✓ Label "${name}" created in ${state.repo}\n`);
 }
 
+if (group === 'issue' && cmd === 'develop') {
+  const opts = parsePairs(rest_, ['--checkout', '--list']);
+  requireLogin();
+  requireRepo(opts.repo);
+  const issue = state.issues.find((i) => i.number === Number(opts._[0]) && !i.pull);
+  if (!issue) done('', 1, `GraphQL: Could not resolve to an Issue with the number of ${opts._[0]}. (repository.issue)\n`);
+  const linked = state.linkedBranches[issue.number] || [];
+  if (opts.list) {
+    done(linked.map((b) => `${b}\thttps://github.com/${state.repo}/tree/${b}\n`).join(''));
+  }
+  if (!atLeast('WRITE')) done('', 1, 'GraphQL: Resource not accessible by integration (createLinkedBranch)\n');
+  const slug = issue.title.toLowerCase().replace(/[^a-z0-9]+/g, '-').replace(/^-|-$/g, '');
+  const name = opts.name || `${issue.number}-${slug}`;
+  // GitHub makes the branch on the server, from the base branch as it is now.
+  git('fetch', '-q', 'origin', opts.base || 'main');
+  git('push', '-q', 'origin', `FETCH_HEAD:refs/heads/${name}`);
+  state.linkedBranches[issue.number] = [...linked, name];
+  if (opts.checkout) {
+    git('fetch', '-q', 'origin', name);
+    git('checkout', '-q', '-b', name, '--track', `origin/${name}`);
+  }
+  done(`github.com/${state.repo}/tree/${name}\n`);
+}
+
+if (group === 'pr') {
+  if (!['list', 'create', 'edit', 'view'].includes(cmd)) unsupported('command');
+  const opts = parsePairs(rest_);
+  requireLogin();
+  requireRepo(opts.repo);
+  const findPull = (n) => {
+    const pull = state.pulls.find((p) => p.number === Number(n));
+    if (!pull) done('', 1, `GraphQL: Could not resolve to a PullRequest with the number of ${n}. (repository.pullRequest)\n`);
+    return pull;
+  };
+
+  if (cmd === 'list') {
+    const want = (opts.state || 'open').toUpperCase();
+    const view = (p) => ({ number: p.number, url: pullUrl(p.number) });
+    json(state.pulls.filter((p) => p.head === opts.head && p.state === want).map((p) => Object.fromEntries(opts.json.split(',').map((f) => [f, view(p)[f]]))));
+  }
+
+  if (cmd === 'create') {
+    if (!atLeast('WRITE')) done('', 1, 'pull request create failed: GraphQL: Resource not accessible by integration (createPullRequest)\n');
+    if (state.pulls.some((p) => p.head === opts.head && p.state === 'OPEN')) {
+      done('', 1, `a pull request for branch "${opts.head}" into branch "${opts.base}" already exists\n`);
+    }
+    const number = [...state.issues, ...state.pulls].reduce((max, i) => Math.max(max, i.number), 0) + 1;
+    state.pulls.push({ number, state: 'OPEN', head: opts.head, base: opts.base, title: opts.title, body: fs.readFileSync(0, 'utf8') });
+    done(`${pullUrl(number)}\n`);
+  }
+
+  if (cmd === 'edit') {
+    if (!atLeast('WRITE')) done('', 1, 'GraphQL: Resource not accessible by integration (updatePullRequest)\n');
+    const pull = findPull(opts._[0]);
+    if (opts.title !== undefined) pull.title = opts.title;
+    if (opts['body-file'] !== undefined) pull.body = fs.readFileSync(0, 'utf8');
+    done(`${pullUrl(pull.number)}\n`);
+  }
+
+  if (cmd === 'view') {
+    const pull = findPull(opts._[0]);
+    const view = { number: pull.number, url: pullUrl(pull.number), closingIssuesReferences: closesOf(pull).map((number) => ({ number })) };
+    json(Object.fromEntries(opts.json.split(',').map((f) => [f, view[f]])));
+  }
+
+  unsupported('command');
+}
+
 if (group === 'api') {
   const opts = parseApiFlags(argv.slice(1));
   requireLogin();
@@ -199,7 +310,7 @@ if (group === 'api') {
         done('', 1, `gh: Could not resolve to an Issue with the number of ${n}.\n`);
       }
       const nodes = (state.pulls || [])
-        .filter((p) => p.closes.includes(n))
+        .filter((p) => closesOf(p).includes(n))
         .map((p) => ({ number: p.number, url: `https://github.com/${state.repo}/pull/${p.number}`, state: p.state }));
       json({ data: { repository: { issue: { closedByPullRequestsReferences: { nodes } } } } });
     }

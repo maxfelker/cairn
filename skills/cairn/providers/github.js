@@ -4,7 +4,7 @@
 
 'use strict';
 
-const { KINDS, run, fail, gitRemote, readDraft, readBody, flags, cli, matchItems } = require('./lib.js');
+const { KINDS, BASE, git, currentBranch, gitMessage, sleep, run, fail, gitRemote, readDraft, readBody, flags, cli, matchItems } = require('./lib.js');
 
 const PROVIDER = 'github';
 const HOST = 'github.com';
@@ -597,6 +597,253 @@ function commentArgs(args) {
   return comment({ id: f.on, file: f.file, key: f.key });
 }
 
+// --- Changes: a branch, its pushed commits, and the pull request for it ---
+
+const NOT_ON_CHANGE_FIX = 'Start a change first: run start-change --for <item>.';
+
+// Fail unless the clone is on a change branch. Cairn never commits to,
+// pushes, or proposes the base branch itself.
+function changeBranch(ctx, doing) {
+  const branch = currentBranch(ctx);
+  if (!branch) return fail('NOT_ON_CHANGE', `The clone is not on a branch, so there is nothing to ${doing}.`, NOT_ON_CHANGE_FIX);
+  if (branch === BASE) return fail('NOT_ON_CHANGE', `The clone is on ${BASE}. Cairn does not ${doing} ${BASE}.`, NOT_ON_CHANGE_FIX);
+  return { ok: true, branch };
+}
+
+function gitFailed(what, r, fix = 'Check the message above, then try again.') {
+  return fail('PROVIDER_ERROR', `git could not ${what}: ${gitMessage(r)}`, fix);
+}
+
+// The commit a branch points to on the remote, or null when it is not there.
+function remoteHead(ctx, remote, branch) {
+  const r = git(ctx, ['ls-remote', '--heads', remote, `refs/heads/${branch}`]);
+  if (!r.ok) return { ok: false, r };
+  return { ok: true, sha: r.stdout.trim().split(/\s+/)[0] || null };
+}
+
+// Start the work on an item, or go back to it: one branch per item, made
+// from the latest base branch. The branch is linked to the item, which
+// makes GitHub close the item when the pull request merges. With `partial`,
+// the change delivers only part of the item, so the branch is plain and
+// named `<id>-<partial>`. A dirty working tree is refused, never stashed.
+function startChange({ exec = run, cwd, id, partial } = {}) {
+  const t = target({ exec, cwd });
+  if (!t.ok) return t;
+  const repo = t.target;
+  const ctx = { exec, cwd };
+
+  const a = access({ exec, cwd, repo, action: 'push' });
+  if (!a.ok) return a;
+
+  const issue = api(ctx, [`repos/${repo}/issues/${id}`]);
+  if (!issue.ok) {
+    if (issue.result) return issue.result;
+    return fail('TARGET_UNAVAILABLE', `#${id} was not found in ${repo}, or your gh account cannot see it.`, 'Check the item number.');
+  }
+  if (issue.data.pull_request) {
+    return fail('TARGET_UNAVAILABLE', `#${id} is a pull request, not a work item.`, 'Name the issue the change is for.');
+  }
+
+  // The branch this item already has, if any.
+  let branch = null;
+  if (partial) {
+    branch = `${id}-${partial}`;
+  } else {
+    const listed = exec('gh', ['issue', 'develop', '--list', String(id), '--repo', repo], { cwd });
+    if (!listed.ok) return providerError(`listing the branches linked to #${id}`, listed);
+    branch = listed.stdout.split('\n').map((l) => l.split('\t')[0].trim()).filter(Boolean)[0] || null;
+  }
+  const done = (created) => ({ ok: true, provider: PROVIDER, branch, created, linked: !partial });
+
+  const current = currentBranch(ctx);
+  if (branch && current === branch) return done(false);
+
+  if (git(ctx, ['status', '--porcelain']).stdout.trim()) {
+    return fail(
+      'DIRTY_TREE',
+      `The working tree has changes that are not committed, and the clone is on ${current || 'no branch'}, not on the branch for #${id}.`,
+      'Commit, stash, or discard those changes yourself, then ask again. Cairn does not stash or discard them for you.',
+    );
+  }
+
+  const fetched = git(ctx, ['fetch', t.remote, BASE]);
+  if (!fetched.ok) return gitFailed(`fetch ${BASE} from ${t.remote}`, fetched);
+
+  if (branch) {
+    let r;
+    if (git(ctx, ['rev-parse', '--verify', '--quiet', `refs/heads/${branch}`]).ok) {
+      r = git(ctx, ['checkout', branch]);
+    } else if (git(ctx, ['fetch', t.remote, branch]).ok) {
+      r = git(ctx, ['checkout', '-b', branch, '--track', `${t.remote}/${branch}`]);
+    } else if (partial) {
+      r = git(ctx, ['checkout', '-b', branch, '--no-track', `${t.remote}/${BASE}`]);
+      if (!r.ok) return gitFailed(`create the branch ${branch}`, r);
+      return done(true);
+    } else {
+      return fail('PROVIDER_ERROR', `#${id} is linked to the branch ${branch}, but that branch is not in this clone or on ${t.remote}.`, `Remove ${branch} under Development on #${id}, then ask again.`);
+    }
+    if (!r.ok) return gitFailed(`switch to the branch ${branch}`, r);
+    return done(false);
+  }
+
+  const made = exec('gh', ['issue', 'develop', String(id), '--repo', repo, '--base', BASE, '--checkout'], { cwd });
+  if (!made.ok) return providerError(`creating a branch for #${id}`, made);
+  branch = currentBranch(ctx);
+  return done(true);
+}
+
+// Push the current change branch. Never the base branch, and never with
+// force: a push the remote rejects is reported, not retried.
+function pushChange({ exec = run, cwd } = {}) {
+  const t = target({ exec, cwd });
+  if (!t.ok) return t;
+  const ctx = { exec, cwd };
+
+  const a = access({ exec, cwd, repo: t.target, action: 'push' });
+  if (!a.ok) return a;
+
+  const on = changeBranch(ctx, 'push');
+  if (!on.ok) return on;
+  const { branch } = on;
+
+  const remote = remoteHead(ctx, t.remote, branch);
+  if (!remote.ok) return gitFailed(`read ${branch} on ${t.remote}`, remote.r);
+  const head = git(ctx, ['rev-parse', 'HEAD']).stdout.trim();
+  if (remote.sha && remote.sha === head) return { ok: true, provider: PROVIDER, branch, pushed: false };
+
+  const pushed = git(ctx, ['push', '-u', t.remote, 'HEAD']);
+  if (!pushed.ok) {
+    const rejected = /rejected|fetch first|non-fast-forward/.test(pushed.stderr);
+    return gitFailed(
+      `push ${branch}`,
+      pushed,
+      rejected
+        ? `${t.remote} has commits on ${branch} that this clone does not. Pull them into the branch first, then push again. Cairn never force-pushes.`
+        : undefined,
+    );
+  }
+  return { ok: true, provider: PROVIDER, branch, pushed: true };
+}
+
+// The lines that end a pull request description and say what it delivers.
+// The command writes them, so the links are the same every time.
+const LINK_LINE = /^(?:Closes #\d+|Part of #\d+\.?)$/;
+
+function withLinks(body, id, partial, closes) {
+  const lines = body.replace(/\s+$/, '').split('\n');
+  while (lines.length && (lines[lines.length - 1].trim() === '' || LINK_LINE.test(lines[lines.length - 1].trim()))) lines.pop();
+  const closing = closes.map((n) => `Closes #${n}`).join('\n');
+  const links = partial ? [`Part of #${id}.`, closing].filter(Boolean).join('\n\n') : closing;
+  return `${lines.join('\n')}\n\n${links}\n`;
+}
+
+// How long to wait between reads of a pull request's closing links, which
+// GitHub works out a moment after the description is saved.
+const LINK_WAIT_MS = Number(process.env.CAIRN_LINK_WAIT_MS || 2000);
+
+// Put the current branch up for review: open its pull request, or update
+// the one already open. By default the change closes the item and its open
+// children. With `partial`, it is part of the item and closes only `closes`.
+// Afterwards, check that GitHub will close exactly those items on merge.
+function saveChange({ exec = run, cwd, id, file, partial = false, closes = [] } = {}) {
+  const draft = readDraft(file);
+  if (!draft.ok) return draft;
+
+  const t = target({ exec, cwd });
+  if (!t.ok) return t;
+  const repo = t.target;
+  const ctx = { exec, cwd };
+
+  const a = access({ exec, cwd, repo, action: 'propose-change' });
+  if (!a.ok) return a;
+
+  const on = changeBranch(ctx, 'open a change for');
+  if (!on.ok) return on;
+  const { branch } = on;
+
+  const remote = remoteHead(ctx, t.remote, branch);
+  if (!remote.ok) return gitFailed(`read ${branch} on ${t.remote}`, remote.r);
+  if (!remote.sha) {
+    return fail('NOT_PUSHED', `The branch ${branch} is not on ${t.remote} yet, so there is nothing to review.`, 'Push it first: run push-change.');
+  }
+
+  const issue = api(ctx, [`repos/${repo}/issues/${id}`]);
+  if (!issue.ok) {
+    if (issue.result) return issue.result;
+    return fail('TARGET_UNAVAILABLE', `#${id} was not found in ${repo}, or your gh account cannot see it.`, 'Check the item number.');
+  }
+
+  let wanted = closes.map(String);
+  if (!partial) {
+    const kids = apiList(ctx, `repos/${repo}/issues/${id}/sub_issues?per_page=100`);
+    if (!kids.ok) return failed(kids, `reading sub-issues of #${id}`);
+    wanted = [String(id), ...kids.data.filter((k) => k.state === 'open').map((k) => String(k.number))];
+  }
+  const body = withLinks(draft.body, id, partial, wanted);
+
+  const list = exec('gh', ['pr', 'list', '--repo', repo, '--head', branch, '--state', 'open', '--json', 'number,url'], { cwd });
+  if (!list.ok) return providerError(`listing pull requests for ${branch}`, list);
+  const existing = JSON.parse(list.stdout)[0] || null;
+
+  let change;
+  if (existing) {
+    const r = exec('gh', ['pr', 'edit', String(existing.number), '--repo', repo, '--title', draft.title, '--body-file', '-'], { cwd, input: body });
+    if (!r.ok) return providerError(`updating pull request #${existing.number}`, r);
+    change = { id: String(existing.number), url: existing.url };
+  } else {
+    const r = exec('gh', ['pr', 'create', '--repo', repo, '--base', BASE, '--head', branch, '--title', draft.title, '--body-file', '-'], { cwd, input: body });
+    if (!r.ok) return providerError(`opening a pull request for ${branch}`, r);
+    const url = r.stdout.trim().split('\n').pop().trim();
+    const number = (/\/pull\/(\d+)/.exec(url) || [])[1];
+    if (!number) return fail('PROVIDER_ERROR', `GitHub opened a pull request for ${branch}, but did not report its number.`, 'Find it with gh pr list, then save again.');
+    change = { id: number, url };
+  }
+
+  // What will merging close? Read it back, because a closing word in the
+  // description or a linked branch can add an item nobody asked for.
+  let got = [];
+  for (let attempt = 0; attempt < 3; attempt += 1) {
+    if (attempt) sleep(LINK_WAIT_MS);
+    const view = exec('gh', ['pr', 'view', change.id, '--repo', repo, '--json', 'closingIssuesReferences'], { cwd });
+    if (!view.ok) return providerError(`reading what pull request #${change.id} closes`, view);
+    got = JSON.parse(view.stdout).closingIssuesReferences.map((i) => String(i.number));
+    if (got.length === wanted.length && wanted.every((n) => got.includes(n))) {
+      return { ok: true, provider: PROVIDER, change, created: !existing, closes: wanted };
+    }
+  }
+  const refs = (ids) => ids.map((n) => `#${n}`).join(', ');
+  const extra = got.filter((n) => !wanted.includes(n));
+  const missing = wanted.filter((n) => !got.includes(n));
+  const result = extra.length
+    ? fail(
+      'CLOSES_MISMATCH',
+      `Merging pull request #${change.id} would also close ${refs(extra)}, which this change does not deliver.`,
+      `Reword any "closes", "fixes", or "resolves" before ${refs(extra)} in the description and save again. If the description has none, remove ${refs(extra)} under Development on the pull request's page.`,
+    )
+    : fail(
+      'CLOSES_MISMATCH',
+      `Merging pull request #${change.id} would not close ${refs(missing)}.`,
+      `Check that ${refs(missing)} is an open issue in ${repo}, then save again.`,
+    );
+  return { ...result, change, closes: got };
+}
+
+function startChangeArgs(args) {
+  const f = flags(args, ['for', 'partial']);
+  if (!f || !/^\d+$/.test(f.for || '')) return null;
+  if (f.partial !== undefined && !/^[a-z0-9][a-z0-9-]*$/.test(f.partial)) return null;
+  return startChange({ id: f.for, partial: f.partial });
+}
+
+// `--partial` takes no value here, so take it out before reading the pairs.
+function saveChangeArgs(args) {
+  const partial = args.includes('--partial');
+  const f = flags(args.filter((a) => a !== '--partial'), ['for', 'file', 'closes']);
+  if (!f || !/^\d+$/.test(f.for || '') || !f.file) return null;
+  if (f.closes !== undefined && (!partial || !/^\d+(,\d+)*$/.test(f.closes))) return null;
+  return saveChange({ id: f.for, file: f.file, partial, closes: f.closes ? f.closes.split(',') : [] });
+}
+
 function listItemsArgs(args) {
   const f = flags(args, ['kind']);
   if (!f || !KINDS.includes(f.kind)) return null;
@@ -627,10 +874,13 @@ const commands = {
   'list-items': listItemsArgs,
   'order-children': orderChildrenArgs,
   'save-item': saveItemArgs,
+  'start-change': startChangeArgs,
+  'push-change': (args) => (args.length ? null : pushChange()),
+  'save-change': saveChangeArgs,
 };
 
 if (require.main === module) {
   process.exitCode = cli(commands, process.argv.slice(2));
 }
 
-module.exports = { name: PROVIDER, commands, marker, comment, actions: ACTIONS, kinds: KIND_LABELS, parseRemote, target, auth, access, check, findItem, getItem, listItems, orderChildren, saveItem };
+module.exports = { name: PROVIDER, commands, marker, comment, actions: ACTIONS, kinds: KIND_LABELS, parseRemote, target, auth, access, check, findItem, getItem, listItems, orderChildren, saveItem, startChange, pushChange, saveChange, withLinks };
