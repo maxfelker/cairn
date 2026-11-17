@@ -359,9 +359,10 @@ test('get-item: returns the body, comments, and children with their kinds', () =
   });
   const { status, json } = gh.run('get-item', '--id', '1');
   assert.equal(status, 0, JSON.stringify(json));
-  assert.deepEqual(json.item, { id: '1', url: 'https://github.com/octo/repo/issues/1', title: 'Trading', kind: 'epic', state: 'open', body: 'Why…', parent: null });
+  assert.deepEqual(json.item, { id: '1', url: 'https://github.com/octo/repo/issues/1', title: 'Trading', kind: 'epic', state: 'open', body: 'Why…', images: [], parent: null });
   assert.equal(gh.run('get-item', '--id', '2').json.item.parent, '1');
-  assert.deepEqual(json.comments, [{ author: 'pm', body: 'Include allies?' }, { author: 'octo', body: 'Later.' }]);
+  assert.deepEqual(json.comments.map((c) => [c.author, c.body, c.cairn, c.images]), [['pm', 'Include allies?', false, []], ['octo', 'Later.', false, []]]);
+  assert.match(json.comments[0].url, /\/issues\/1#issuecomment-\d+$/);
   assert.deepEqual(json.changes, []);
   assert.deepEqual(json.children, [
     { id: '2', title: 'A player can trade food', kind: 'feature', state: 'open' },
@@ -921,6 +922,8 @@ test('get-change: a ready change with passing checks, an approval, and no thread
     mergeable: 'mergeable',
     mergeState: 'clean',
     behind: 0,
+    reviews: [],
+    comments: [],
     threads: [],
   });
 });
@@ -997,4 +1000,131 @@ test('get-change: it only reads', () => {
   gh.run('get-change', '--id', '30');
   const writes = gh.state().calls.filter((c) => c.includes('-X') || ['create', 'edit', 'merge'].includes(c[1]));
   assert.deepEqual(writes, []);
+});
+
+// Images: GitHub's rendering gives each attached image a signed URL.
+
+const SHOT = '<img width="10" height="10" alt="zoom bug" src="https://github.com/user-attachments/assets/abc-123" />';
+
+test('get-item: the item and its comments list their attached images', () => {
+  const gh = fakeGitHub({
+    issues: [{
+      number: 1,
+      title: 'Zoom',
+      body: `It jumps.\n\n${SHOT}`,
+      comments: [
+        { author: 'rev', body: 'Two shots:\n\n![before](https://github.com/user-attachments/assets/b1)\n![after](https://github.com/user-attachments/assets/b2)' },
+        { author: 'octo', body: 'Fixed.\n\n<!-- cairn -->' },
+      ],
+    }],
+  });
+  const { status, json } = gh.run('get-item', '--id', '1');
+  assert.equal(status, 0, JSON.stringify(json));
+  assert.deepEqual(json.item.images, [{ url: 'https://private-user-images.githubusercontent.com/1/abc-123.png?jwt=fake&v=1', alt: 'zoom bug' }]);
+  assert.deepEqual(json.comments[0].images.map((i) => i.alt), ['before', 'after']);
+  assert.deepEqual(json.comments[1].images, []);
+  assert.equal(json.comments[1].cairn, true, 'the marker is read from the Markdown, which keeps it');
+  assert.ok(json.item.body.includes('user-attachments'), 'the body stays the Markdown');
+});
+
+test('get-change: conversation comments, review summaries, and thread comments list their images', () => {
+  const gh = changeFor({
+    comments: [{ id: 701, author: 'pm', body: `Make it look like this.\n\n${SHOT}` }],
+    reviews: [
+      { id: 801, author: 'rev', state: 'CHANGES_REQUESTED', body: 'See the line notes.' },
+      { id: 802, author: 'rev', state: 'COMMENTED', body: '' },
+    ],
+    threads: [{ id: 'T1', path: 'zoom.js', line: 3, comments: [{ id: 901, author: 'rev', body: `Off by one?\n\n${SHOT}` }] }],
+  });
+  const { status, json } = gh.run('get-change', '--id', '30');
+  assert.equal(status, 0, JSON.stringify(json));
+  assert.deepEqual(json.comments.map((c) => [c.id, c.author, c.images.length]), [['701', 'pm', 1]]);
+  assert.match(json.comments[0].url, /#issuecomment-701$/);
+  assert.deepEqual(json.reviews.map((r) => [r.id, r.state, r.body]), [['801', 'changes_requested', 'See the line notes.']], 'a review with no summary is left out');
+  assert.deepEqual(json.threads[0].comments[0].images, [{ url: 'https://private-user-images.githubusercontent.com/1/abc-123.png?jwt=fake&v=1', alt: 'zoom bug' }]);
+});
+
+// get-image runs a download in a child process, so these tests serve images
+// from a local server and run the adapter asynchronously.
+
+const http = require('node:http');
+const os = require('node:os');
+const { spawn } = require('node:child_process');
+
+const PNG = Buffer.from('89504e470d0a1a0a0000000d49484452000000010000000108060000001f15c4890000000d4944415478da6360000002000154a24f5d0000000049454e44ae426082', 'hex');
+
+async function withServer(fn) {
+  const server = http.createServer((req, res) => {
+    if (req.url.startsWith('/shot')) {
+      res.writeHead(200, { 'content-type': 'image/png' });
+      res.end(PNG);
+    } else if (req.url === '/page') {
+      res.writeHead(200, { 'content-type': 'text/html' });
+      res.end('<p>not an image</p>');
+    } else {
+      res.writeHead(404);
+      res.end();
+    }
+  });
+  await new Promise((r) => server.listen(0, '127.0.0.1', r));
+  try {
+    return await fn(`http://127.0.0.1:${server.address().port}`);
+  } finally {
+    server.close();
+  }
+}
+
+function runAsync(gh, ...args) {
+  return new Promise((resolve) => {
+    const env = { ...gh.env, CAIRN_IMAGE_HOSTS: '127.0.0.1' };
+    const child = spawn(process.execPath, [path.join(__dirname, '..', 'skills', 'cairn', 'providers', 'github.js'), ...args], { cwd: gh.cwd, env });
+    let out = '';
+    child.stdout.on('data', (d) => { out += d; });
+    child.on('close', (status) => resolve({ status, json: out ? JSON.parse(out) : null }));
+  });
+}
+
+test('get-image: downloads an image outside the repository, and gives it an extension', async () => {
+  const gh = fakeGitHub();
+  const out = fs.mkdtempSync(path.join(os.tmpdir(), 'cairn-img-'));
+  await withServer(async (base) => {
+    const { status, json } = await runAsync(gh, 'get-image', '--url', `${base}/shot?jwt=x`, '--out', path.join(out, 'new'));
+    assert.equal(status, 0, JSON.stringify(json));
+    assert.equal(json.type, 'image/png');
+    assert.equal(json.bytes, PNG.length);
+    assert.equal(json.path, path.join(fs.realpathSync(out), 'new', 'shot.png'));
+    assert.deepEqual(fs.readFileSync(json.path), PNG);
+  });
+});
+
+test('get-image: a folder inside the repository is refused before anything is downloaded', async () => {
+  const gh = fakeGitHub();
+  await withServer(async (base) => {
+    for (const out of ['.', 'shots', path.join(gh.cwd, 'deep', 'er')]) {
+      const { status, json } = await runAsync(gh, 'get-image', '--url', `${base}/shot`, '--out', out);
+      assert.equal(status, 1);
+      assert.equal(json.code, 'INSIDE_REPO', out);
+    }
+  });
+  assert.equal(fs.existsSync(path.join(gh.cwd, 'shots')), false, 'no folder is made inside the repository');
+  assert.deepEqual(gh.git('status', '--porcelain'), '');
+});
+
+test('get-image: an expired link, a page that is not an image, and a host that is not GitHub', async () => {
+  const gh = fakeGitHub();
+  const out = fs.mkdtempSync(path.join(os.tmpdir(), 'cairn-img-'));
+  await withServer(async (base) => {
+    const expired = await runAsync(gh, 'get-image', '--url', `${base}/gone`, '--out', out);
+    assert.equal(expired.json.code, 'PROVIDER_ERROR');
+    assert.match(expired.json.fix, /expire/);
+    const page = await runAsync(gh, 'get-image', '--url', `${base}/page`, '--out', out);
+    assert.equal(page.json.code, 'PROVIDER_ERROR');
+    assert.match(page.json.message, /not an image/);
+  });
+  assert.deepEqual(fs.readdirSync(out), [], 'nothing is saved');
+  const elsewhere = gh.run('get-image', '--url', 'https://example.com/x.png', '--out', out);
+  assert.equal(elsewhere.json.code, 'NOT_THIS_PROVIDER');
+  const plain = gh.run('get-image', '--url', 'http://private-user-images.githubusercontent.com/1/x.png', '--out', out);
+  assert.equal(plain.json.code, 'NOT_THIS_PROVIDER', 'only https from GitHub');
+  assert.equal(gh.run('get-image', '--url', 'x').status, 2);
 });

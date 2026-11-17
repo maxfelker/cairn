@@ -15,7 +15,12 @@
 //                                     closing words in the body, and issues its branch is linked to
 //              checks: [statusCheckRollup entries], reviewDecision, mergeable, mergeState,
 //              behind: commits on main the head lacks, pendingReview: true when the viewer has one,
-//              threads: [{id, resolved, outdated, path, line, comments: [{id, author, body}]}]}],
+//              threads: [{id, resolved, outdated, path, line, comments: [{id, author, body}]}],
+//              comments: [{id, author, body}] on the conversation, reviews: [{id, author, state, body}]}],
+//
+// With the full+json media type (`-H 'Accept: application/vnd.github.full+json'`),
+// REST results add `body_html`, and GraphQL gives `bodyHTML`, as GitHub does.
+// Each attached image becomes a signed private-user-images URL there.
 //     linkedBranches: {"<issue number>": [branch names]},
 //     calls: [[...argv]] }
 //
@@ -94,8 +99,9 @@ function requireRepo(repo) {
   }
 }
 
-function rest(issue) {
+function rest(issue, full) {
   return {
+    ...(full ? { body_html: renderHtml(issue.body) } : {}),
     id: issue.id,
     number: issue.number,
     title: issue.title,
@@ -136,6 +142,21 @@ function closesOf(pull) {
     if (branches.includes(pull.head)) found.add(Number(n));
   }
   return [...found].filter((n) => state.issues.some((i) => i.number === n && !i.pull)).sort((a, b) => a - b);
+}
+
+// GitHub's rendering of a body, reduced to what Cairn reads: hidden
+// comments are dropped, and each attached image, as an <img> tag or as
+// Markdown, gets a signed URL with an escaped query, as GitHub serves it.
+function renderHtml(body) {
+  const signed = (url) => `https://private-user-images.githubusercontent.com/1/${url.split('/').pop()}.png?jwt=fake&amp;v=1`;
+  let html = String(body || '').replace(/<!--[\s\S]*?-->/g, '');
+  html = html.replace(/<img\b[^>]*>/gi, (tag) => {
+    const src = (/src="([^"]*)"/.exec(tag) || [])[1] || '';
+    const alt = (/alt="([^"]*)"/.exec(tag) || [])[1] || '';
+    return `<a href="${signed(src)}"><img alt="${alt}" src="${signed(src)}"></a>`;
+  });
+  html = html.replace(/!\[([^\]]*)\]\(([^)]+)\)/g, (_, alt, src) => `<a href="${signed(src)}"><img alt="${alt}" src="${signed(src)}"></a>`);
+  return `<p>${html.trim()}</p>`;
 }
 
 const pullUrl = (n) => `https://github.com/${state.repo}/pull/${n}`;
@@ -182,6 +203,11 @@ function parseApiFlags(args) {
     else if (a === '--input') out.input = args[++i];
     else if (a === '--paginate') out.paginate = true;
     else if (a === '--slurp') out.slurp = true;
+    else if (a === '-H' || a === '--header') {
+      const h = args[++i];
+      if (h !== 'Accept: application/vnd.github.full+json') unsupported(`api header ${h}`);
+      out.full = true;
+    }
     else if (a === '-f' || a === '-F' || a === '--raw-field' || a === '--field') {
       const [k, ...v] = args[++i].split('=');
       out.fields[k] = a === '-F' && /^\d+$/.test(v.join('=')) ? Number(v.join('=')) : v.join('=');
@@ -337,16 +363,18 @@ if (group === 'api') {
         isOutdated: !!th.outdated,
         path: th.path || null,
         line: th.line === undefined ? null : th.line,
-        comments: { nodes: th.comments.map((c) => ({ databaseId: c.id, author: { login: c.author }, body: c.body, url: `${pullUrl(pull.number)}#discussion_r${c.id}` })) },
+        comments: { nodes: th.comments.map((c) => ({ databaseId: c.id, author: { login: c.author }, body: c.body, bodyHTML: renderHtml(c.body), url: `${pullUrl(pull.number)}#discussion_r${c.id}` })) },
       }));
-      json({ data: { repository: { pullRequest: { reviews: { totalCount: pull.pendingReview ? 1 : 0 }, reviewThreads: { nodes } } } } });
+      const reviews = (pull.reviews || []).map((r) => ({ databaseId: r.id, author: { login: r.author }, state: r.state, body: r.body, bodyHTML: renderHtml(r.body), url: `${pullUrl(pull.number)}#pullrequestreview-${r.id}` }));
+      const comments = (pull.comments || []).map((c) => ({ databaseId: c.id, author: { login: c.author }, body: c.body, bodyHTML: renderHtml(c.body), url: `${pullUrl(pull.number)}#issuecomment-${c.id}` }));
+      json({ data: { repository: { pullRequest: { pending: { totalCount: pull.pendingReview ? 1 : 0 }, reviews: { nodes: reviews }, comments: { nodes: comments }, reviewThreads: { nodes } } } } });
     }
     unsupported('graphql query');
   }
 
   const [pathPart, queryPart = ''] = opts.path.split('?');
   const query = Object.fromEntries(new URLSearchParams(queryPart));
-  const restComment = (issue, c) => ({ id: c.id, body: c.body, user: { login: c.author }, html_url: `https://github.com/${state.repo}/issues/${issue.number}#issuecomment-${c.id}` });
+  const restComment = (issue, c) => ({ ...(opts.full ? { body_html: renderHtml(c.body) } : {}), id: c.id, body: c.body, user: { login: c.author }, html_url: `https://github.com/${state.repo}/issues/${issue.number}#issuecomment-${c.id}` });
 
   const compare = /^repos\/([^/]+\/[^/]+)\/compare\/([^.]+)\.\.\.(.+)$/.exec(pathPart);
   if (compare && opts.method === 'GET') {
@@ -405,7 +433,7 @@ if (group === 'api') {
     json(rest(issue));
   }
 
-  if (number && !sub && opts.method === 'GET') json(rest(findIssue(number)));
+  if (number && !sub && opts.method === 'GET') json(rest(findIssue(number), opts.full));
 
   if (number && !sub && opts.method === 'PATCH') {
     const issue = findIssue(number);

@@ -4,6 +4,8 @@
 
 'use strict';
 
+const fs = require('node:fs');
+const path = require('node:path');
 const { KINDS, BASE, git, currentBranch, gitMessage, sleep, run, fail, gitRemote, readDraft, readBody, flags, cli, matchItems } = require('./lib.js');
 
 const PROVIDER = 'github';
@@ -16,12 +18,12 @@ function parseRemote(url) {
   if (typeof url !== 'string') return null;
   const value = url.trim();
   let host;
-  let path;
+  let repoPath;
 
   const scp = /^(?:[^@/\s]+@)?([^:/\s]+):(?!\/)(.+)$/.exec(value);
   if (scp && !/^[a-z][a-z0-9+.-]*:\/\//i.test(value)) {
     host = scp[1];
-    path = scp[2];
+    repoPath = scp[2];
   } else {
     let parsed;
     try {
@@ -31,10 +33,10 @@ function parseRemote(url) {
     }
     if (!['https:', 'http:', 'ssh:', 'git:'].includes(parsed.protocol)) return null;
     host = parsed.hostname;
-    path = parsed.pathname;
+    repoPath = parsed.pathname;
   }
 
-  const parts = path.replace(/^\/+|\/+$/g, '').replace(/\.git$/, '').split('/');
+  const parts = repoPath.replace(/^\/+|\/+$/g, '').replace(/\.git$/, '').split('/');
   if (parts.length !== 2 || parts.some((p) => !p)) return null;
   return { host: host.toLowerCase(), owner: parts[0], name: parts[1] };
 }
@@ -198,9 +200,9 @@ function api({ exec, cwd }, args, body) {
   return { ok: true, data: r.stdout.trim() ? JSON.parse(r.stdout) : null };
 }
 
-// GET every page of a list endpoint.
-function apiList(ctx, path) {
-  const res = api(ctx, ['--paginate', '--slurp', path]);
+// GET every page of a list endpoint. `extra` adds flags, such as a header.
+function apiList(ctx, url, extra = []) {
+  const res = api(ctx, ['--paginate', '--slurp', ...extra, url]);
   if (res.ok) res.data = res.data.flat();
   return res;
 }
@@ -397,12 +399,12 @@ function getItem({ exec = run, cwd, id } = {}) {
   const repo = t.target;
   const ctx = { exec, cwd };
 
-  const issue = api(ctx, [`repos/${repo}/issues/${id}`]);
+  const issue = api(ctx, ['-H', FULL, `repos/${repo}/issues/${id}`]);
   if (!issue.ok) {
     if (issue.result) return issue.result;
     return fail('TARGET_UNAVAILABLE', `#${id} was not found in ${repo}, or your gh account cannot see it.`, 'Check the item number.');
   }
-  const comments = apiList(ctx, `repos/${repo}/issues/${id}/comments?per_page=100`);
+  const comments = apiList(ctx, `repos/${repo}/issues/${id}/comments?per_page=100`, ['-H', FULL]);
   if (!comments.ok) return failed(comments, `reading comments on #${id}`);
   const children = apiList(ctx, `repos/${repo}/issues/${id}/sub_issues?per_page=100`);
   if (!children.ok) return failed(children, `reading sub-issues of #${id}`);
@@ -415,8 +417,8 @@ function getItem({ exec = run, cwd, id } = {}) {
   return {
     ok: true,
     provider: PROVIDER,
-    item: { ...toItem(i), kind: kindOf(i), state: i.state, body: i.body || '', parent: parent.ok ? String(parent.data.number) : null },
-    comments: comments.data.map((c) => ({ author: c.user && c.user.login, body: c.body })),
+    item: { ...toItem(i), kind: kindOf(i), state: i.state, body: i.body || '', images: imagesOf(i.body_html), parent: parent.ok ? String(parent.data.number) : null },
+    comments: comments.data.map((c) => ({ id: String(c.id), author: c.user && c.user.login, body: c.body, url: c.html_url, cairn: isCairn(c.body), images: imagesOf(c.body_html) })),
     children: children.data.map((c) => ({ id: String(c.number), title: c.title, kind: kindOf(c), state: c.state })),
     changes: changes.data,
   };
@@ -863,7 +865,21 @@ function ghFailed(r, what, notFound) {
   return providerError(what, r);
 }
 
-const THREADS_QUERY = 'query($owner: String!, $name: String!, $number: Int!) { repository(owner: $owner, name: $name) { pullRequest(number: $number) { reviews(states: PENDING, first: 1) { totalCount } reviewThreads(first: 100) { nodes { id isResolved isOutdated path line comments(first: 100) { nodes { databaseId author { login } body url } } } } } } }';
+const REVIEW_QUERY = 'query($owner: String!, $name: String!, $number: Int!) { repository(owner: $owner, name: $name) { pullRequest(number: $number) { pending: reviews(states: PENDING, first: 1) { totalCount } reviews(states: [COMMENTED, APPROVED, CHANGES_REQUESTED, DISMISSED], first: 100) { nodes { databaseId author { login } state body bodyHTML url } } comments(first: 100) { nodes { databaseId author { login } body bodyHTML url } } reviewThreads(first: 100) { nodes { id isResolved isOutdated path line comments(first: 100) { nodes { databaseId author { login } body bodyHTML url } } } } } } }';
+
+// One comment in the contract's shape, from GraphQL. `body` is the
+// Markdown, which keeps Cairn's hidden marker; `bodyHTML` is GitHub's
+// rendering, which has the downloadable image URLs.
+function graphComment(c) {
+  return {
+    id: String(c.databaseId),
+    author: c.author && c.author.login,
+    body: c.body,
+    url: c.url,
+    cairn: isCairn(c.body),
+    images: imagesOf(c.bodyHTML),
+  };
+}
 
 // Everything review and readiness depend on, read once: the change, its
 // checks, its review state, whether it can merge, how far it is behind the
@@ -885,7 +901,7 @@ function getChange({ exec = run, cwd, id } = {}) {
   // review is visible only to its author, so any pending review found is
   // the current user's.
   const [owner, name] = repo.split('/');
-  const res = api(ctx, ['graphql', '-f', `query=${THREADS_QUERY}`, '-f', `owner=${owner}`, '-f', `name=${name}`, '-F', `number=${id}`]);
+  const res = api(ctx, ['graphql', '-f', `query=${REVIEW_QUERY}`, '-f', `owner=${owner}`, '-f', `name=${name}`, '-F', `number=${id}`]);
   if (!res.ok) return failed(res, `reading the review threads of pull request #${id}`);
   const p = res.data.data.repository.pullRequest;
 
@@ -909,25 +925,155 @@ function getChange({ exec = run, cwd, id } = {}) {
       closes: pr.closingIssuesReferences.map((i) => String(i.number)),
     },
     checks: checksOf(pr.statusCheckRollup),
-    review: { decision: lower(pr.reviewDecision), pending: p.reviews.totalCount > 0 },
+    review: { decision: lower(pr.reviewDecision), pending: p.pending.totalCount > 0 },
     mergeable: lower(pr.mergeable),
     mergeState: lower(pr.mergeStateStatus),
     behind,
+    // A review's own summary, when it has one. Its line comments are in
+    // `threads`.
+    reviews: p.reviews.nodes.filter((r) => (r.body || '').trim()).map((r) => ({ ...graphComment(r), state: lower(r.state) })),
+    // The pull request's conversation, outside any review.
+    comments: p.comments.nodes.map(graphComment),
     threads: p.reviewThreads.nodes.map((th) => ({
       id: th.id,
       resolved: th.isResolved,
       outdated: th.isOutdated,
       path: th.path,
       line: th.line,
-      comments: th.comments.nodes.map((c) => ({
-        id: String(c.databaseId),
-        author: c.author && c.author.login,
-        body: c.body,
-        url: c.url,
-        cairn: isCairn(c.body),
-      })),
+      comments: th.comments.nodes.map(graphComment),
     })),
   };
+}
+
+// --- Images attached to items and comments ---
+
+// The media type that adds `body_html` to REST results. GitHub's rendering
+// carries a signed, short-lived URL for each attached image, which
+// downloads with no token, even in a private repository. The Markdown's
+// `user-attachments` URL would need the user's token.
+const FULL = 'Accept: application/vnd.github.full+json';
+
+const ENTITIES = { amp: '&', quot: '"', '#39': "'", lt: '<', gt: '>' };
+const unescape = (s) => s.replace(/&(amp|quot|#39|lt|gt);/g, (_, e) => ENTITIES[e]);
+
+// The images in a rendered body, in order and without repeats: `url` to
+// download and `alt` text.
+function imagesOf(html) {
+  const seen = new Set();
+  const images = [];
+  for (const [tag] of String(html || '').matchAll(/<img\b[^>]*>/gi)) {
+    const attr = (name) => {
+      const m = new RegExp(`\\s${name}="([^"]*)"`, 'i').exec(tag);
+      return m ? unescape(m[1]) : '';
+    };
+    const url = attr('src');
+    if (!/^https?:\/\//i.test(url) || seen.has(url)) continue;
+    seen.add(url);
+    images.push({ url, alt: attr('alt') });
+  }
+  return images;
+}
+
+// Where `get-image` may download from: GitHub's image hosts only. Tests set
+// CAIRN_IMAGE_HOSTS to a local server instead.
+function imageHostAllowed(u) {
+  const test = (process.env.CAIRN_IMAGE_HOSTS || '').split(',').filter(Boolean);
+  if (test.length) return test.includes(u.hostname) && /^https?:$/.test(u.protocol);
+  if (u.protocol !== 'https:') return false;
+  return u.hostname.endsWith('.githubusercontent.com') || (u.hostname === 'github.com' && u.pathname.startsWith('/user-attachments/'));
+}
+
+const IMAGE_MAX_BYTES = 25 * 1024 * 1024;
+const IMAGE_EXT = { 'image/png': '.png', 'image/jpeg': '.jpg', 'image/gif': '.gif', 'image/webp': '.webp', 'image/svg+xml': '.svg' };
+
+// Download in a child process, because every command is synchronous and
+// fetch is not. It prints one JSON line and never throws.
+const DOWNLOAD = `
+const fs = require('node:fs');
+const [url, file, max] = process.argv.slice(1);
+const say = (o) => process.stdout.write(JSON.stringify(o));
+(async () => {
+  const res = await fetch(url, { redirect: 'follow', signal: AbortSignal.timeout(30000) });
+  const type = (res.headers.get('content-type') || '').split(';')[0].trim();
+  if (!res.ok) return say({ status: res.status });
+  if (!type.startsWith('image/')) return say({ status: res.status, type });
+  const buf = Buffer.from(await res.arrayBuffer());
+  if (buf.length > Number(max)) return say({ status: res.status, type, tooBig: buf.length });
+  fs.writeFileSync(file, buf);
+  say({ status: res.status, type, bytes: buf.length });
+})().catch((e) => say({ error: String((e.cause && e.cause.code) || e.name || e.message) }));
+`;
+
+// The real path of `dir`, or of its nearest folder that exists.
+function realish(dir) {
+  const rest = [];
+  let at = dir;
+  while (!fs.existsSync(at) && path.dirname(at) !== at) {
+    rest.unshift(path.basename(at));
+    at = path.dirname(at);
+  }
+  return path.join(fs.realpathSync(at), ...rest);
+}
+
+// Download one image attached on GitHub into a folder outside the
+// repository, so the agent can look at it. GitHub stays the image's source
+// of truth: a folder inside the working tree is refused, so a downloaded
+// image is never committed by accident.
+function getImage({ exec = run, cwd, url, out } = {}) {
+  const t = target({ exec, cwd });
+  if (!t.ok) return t;
+
+  let u;
+  try {
+    u = new URL(url);
+  } catch {
+    u = null;
+  }
+  if (!u || !imageHostAllowed(u)) {
+    return fail('NOT_THIS_PROVIDER', `${url} is not an image attached on GitHub.`, 'Pass an image URL from the images list that get-item or get-change returned.');
+  }
+
+  const top = git({ exec, cwd }, ['rev-parse', '--show-toplevel']);
+  if (!top.ok) return gitFailed('find the top of the clone', top);
+  const repoDir = fs.realpathSync(top.stdout.trim());
+  const dir = realish(path.resolve(cwd || process.cwd(), out));
+  if (dir === repoDir || dir.startsWith(repoDir + path.sep)) {
+    return fail('INSIDE_REPO', `${out} is inside the repository, where a downloaded image could be committed.`, 'Pass a temporary folder outside the repository, such as the session scratchpad.');
+  }
+  try {
+    fs.mkdirSync(dir, { recursive: true });
+  } catch (err) {
+    return fail('PROVIDER_ERROR', `Cannot create the folder ${dir}: ${err.code || err.message}.`, 'Pass a folder you can write to.');
+  }
+
+  const name = path.basename(u.pathname).replace(/[^A-Za-z0-9._-]+/g, '-').replace(/^[-.]+/, '') || 'image';
+  let file = path.join(dir, name);
+  const r = exec(process.execPath, ['-e', DOWNLOAD, u.href, file, String(IMAGE_MAX_BYTES)]);
+  let got;
+  try {
+    got = JSON.parse(r.stdout);
+  } catch {
+    got = { error: (r.stderr || 'no output').trim().split('\n')[0] };
+  }
+  const again = 'Image links expire a few minutes after they are read. Read the item or change again, then download right away.';
+  if (got.error) return fail('PROVIDER_ERROR', `The image could not be downloaded: ${got.error}.`, again);
+  if (got.status >= 400) return fail('PROVIDER_ERROR', `GitHub answered ${got.status} for the image.`, again);
+  if (got.tooBig) return fail('PROVIDER_ERROR', `The image is ${got.tooBig} bytes, more than the ${IMAGE_MAX_BYTES} Cairn downloads.`, 'Open it on GitHub instead.');
+  if (!got.bytes) return fail('PROVIDER_ERROR', `The link returned ${got.type || 'something'} that is not an image.`, again);
+
+  // Give the file the extension its type says, when the URL had none.
+  const ext = IMAGE_EXT[got.type];
+  if (ext && path.extname(file).toLowerCase() !== ext && !(ext === '.jpg' && /\.jpe?g$/i.test(file))) {
+    fs.renameSync(file, file + ext);
+    file += ext;
+  }
+  return { ok: true, provider: PROVIDER, path: file, type: got.type, bytes: got.bytes };
+}
+
+function getImageArgs(args) {
+  const f = flags(args, ['url', 'out']);
+  if (!f || !f.url || !f.out) return null;
+  return getImage({ url: f.url, out: f.out });
 }
 
 function getChangeArgs(args) {
@@ -986,10 +1132,11 @@ const commands = {
   'push-change': (args) => (args.length ? null : pushChange()),
   'save-change': saveChangeArgs,
   'get-change': getChangeArgs,
+  'get-image': getImageArgs,
 };
 
 if (require.main === module) {
   process.exitCode = cli(commands, process.argv.slice(2));
 }
 
-module.exports = { name: PROVIDER, commands, marker, comment, actions: ACTIONS, kinds: KIND_LABELS, parseRemote, target, auth, access, check, findItem, getItem, listItems, orderChildren, saveItem, startChange, pushChange, saveChange, getChange, isCairn, checksOf, withLinks };
+module.exports = { name: PROVIDER, commands, marker, comment, actions: ACTIONS, kinds: KIND_LABELS, parseRemote, target, auth, access, check, findItem, getItem, listItems, orderChildren, saveItem, startChange, pushChange, saveChange, getChange, getImage, imagesOf, isCairn, checksOf, withLinks };

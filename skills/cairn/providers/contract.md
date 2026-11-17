@@ -28,14 +28,15 @@ contract. A new provider is done when it passes.
 | `check` | All of the above, for the setup check | `target`, `auth`, `access` (each a full result) |
 | `comment --on <id> --file <text\|-> [--key <key>]` | Comment on an item as Cairn. With a key, update Cairn's earlier comment with that key instead of adding another | `comment` (`id`, `url`), `created`, `changed` |
 | `find-item --query <text>` | Which item does the user mean? A reference (`42`, `#42`) or a link to an item in this target is one exact match. A link elsewhere is `NOT_THIS_PROVIDER`. Plain text matches open item titles by shared words | `matches` (each `id`, `title`, `kind`, `state`, `url`; best first, up to 5), `exact` (true when there is one clear match, and then the only one listed) |
-| `get-item --id <id>` | What does this item say, and what is under it? | `item` (`id`, `url`, `title`, `kind`, `state`, `body`, `parent` or null), `comments` (`author`, `body`), `children` (`id`, `title`, `kind`, `state`), `changes` (`id`, `url`, `state`: `merged`, `open`, or `closed`): the changes that close it |
+| `get-item --id <id>` | What does this item say, and what is under it? | `item` (`id`, `url`, `title`, `kind`, `state`, `body`, `images`, `parent` or null), `comments` (`id`, `author`, `body`, `url`, `cairn`, `images`), `children` (`id`, `title`, `kind`, `state`), `changes` (`id`, `url`, `state`: `merged`, `open`, or `closed`): the changes that close it |
 | `list-items --kind <kind>` | Which open items of this kind exist? | `items` (each `id`, `url`, `title`) |
 | `order-children --parent <id> --ids <id,id,…>` | Put these children first, in this order (others keep their order after them) | `order`, `moved` (0 when already in order) |
 | `save-item --kind <kind> --file <draft> [--parent <id>]` | Create a work item, or update the open one of that kind with exactly that title. With a parent, match among its children, and link a new item under it | `created`, `item` (`id`, `url`, `title`), and with a parent: `parent`, `linked` |
 | `start-change --for <id> [--partial <name>]` | Start the work on an item, or go back to it. Makes one branch for the item from the latest `main`, linked to the item, or switches to the branch the item already has. With `--partial`, the change delivers only part of the item: the branch is plain, named `<id>-<name>`, and not linked | `branch`, `created`, `linked` |
 | `push-change` | Push the current change branch. Never `main`, and never with force | `branch`, `pushed` (false when the provider already has every commit) |
 | `save-change --for <id> --file <draft> [--partial [--closes <id,id,…>]]` | Put the current branch up for review: open its change, or update the one already open. The command ends the description with the closing references, then checks what the provider will close | `change` (`id`, `url`), `created`, `closes` (the ids it closes on merge) |
-| `get-change --id <change>` | Where does this change stand in review? Reads only | `change` (`id`, `url`, `state`: `open`, `merged`, or `closed`, `branch`, `closes`), `checks` (`state`: `passed`, `failed`, `pending`, or `none`, and `runs`, each `name` and `state`), `review` (`decision`: the provider's review verdict or null, `pending`: true when the user has a review not yet submitted), `mergeable`, `mergeState`, `behind` (commits on `main` the branch lacks, or null when the change is not open), `threads` (`id`, `resolved`, `outdated`, `path`, `line`, `comments`, each `id`, `author`, `body`, `url`, `cairn`: true when Cairn wrote it) |
+| `get-change --id <change>` | Where does this change stand in review? Reads only | `change` (`id`, `url`, `state`: `open`, `merged`, or `closed`, `branch`, `closes`), `checks` (`state`: `passed`, `failed`, `pending`, or `none`, and `runs`, each `name` and `state`), `review` (`decision`: the provider's review verdict or null, `pending`: true when the user has a review not yet submitted), `mergeable`, `mergeState`, `behind` (commits on `main` the branch lacks, or null when the change is not open), `reviews` (submitted reviews with a summary: a comment plus `state`), `comments` (the change's conversation), `threads` (`id`, `resolved`, `outdated`, `path`, `line`, `comments`). Every comment has `id`, `author`, `body`, `url`, `cairn` (true when Cairn wrote it), and `images` |
+| `get-image --url <url> --out <folder>` | Let me look at an image attached to an item or a change. Downloads one URL from an `images` list into a folder outside the repository | `path`, `type`, `bytes` |
 
 Add a command here only when a feature first needs it. Then add it to every
 provider.
@@ -75,6 +76,16 @@ that protect other people's work in code:
 
 `save-change` checks access for `propose-change`, and the other two check
 `push`, before they change anything.
+
+## Images
+
+An image attached to an item or a comment is listed in that result's
+`images`, each with a `url` to download and its `alt` text. The provider
+stays the image's source of truth. `get-image` saves a copy only into a
+folder outside the repository, and fails with `INSIDE_REPO` for a folder
+inside it, so an image is never committed. Refer to an image in a reply by
+its place on the provider, not by the local copy. A URL may expire a few
+minutes after it is read, so download right after reading.
 
 ## Comments
 
@@ -128,6 +139,7 @@ Tokens, token sources, and scopes never appear in output.
 | `NOT_ON_CHANGE` | The clone is on `main` or on no branch, where Cairn does not push or open a change. |
 | `NOT_PUSHED` | The branch is not on the provider yet, so no change can be opened for it. |
 | `CLOSES_MISMATCH` | The change would close items it does not deliver, or would not close one it does. |
+| `INSIDE_REPO` | A file Cairn would write, such as a downloaded image, would land inside the repository. |
 | `PROVIDER_ERROR` | The provider or git rejected a change. The message carries its error text. |
 
 ## Actions
