@@ -150,7 +150,7 @@ function repoView(viewerPermission, hasIssuesEnabled = true) {
 
 // Every row of the action table, at the boundary role and one role below.
 const MINIMUM = {
-  comment: 'READ', 'create-item': 'READ', label: 'TRIAGE', 'link-child': 'TRIAGE', push: 'WRITE', 'propose-change': 'WRITE',
+  comment: 'READ', 'create-item': 'READ', label: 'TRIAGE', 'link-child': 'TRIAGE', push: 'WRITE', 'propose-change': 'WRITE', merge: 'WRITE',
 };
 const LEVELS = ['NONE', 'READ', 'TRIAGE', 'WRITE', 'MAINTAIN', 'ADMIN'];
 

@@ -38,6 +38,7 @@ contract. A new provider is done when it passes.
 | `get-change --id <change>` | Where does this change stand in review? Reads only | `change` (`id`, `url`, `state`: `open`, `merged`, or `closed`, `branch`, `closes`), `checks` (`state`: `passed`, `failed`, `pending`, or `none`, and `runs`, each `name` and `state`), `review` (`decision`: the provider's review verdict or null, `pending`: true when the user has a review not yet submitted), `mergeable`, `mergeState`, `behind` (commits on `main` the branch lacks, or null when the change is not open), `reviews` (submitted reviews with a summary: a comment plus `state`), `comments` (the change's conversation), `threads` (`id`, `resolved`, `outdated`, `path`, `line`, `comments`). Every comment has `id`, `author`, `body`, `url`, `cairn` (true when Cairn wrote it), and `images` |
 | `get-image --url <url> --out <folder>` | Let me look at an image attached to an item or a change. Downloads one URL from an `images` list into a folder outside the repository | `path`, `type`, `bytes` |
 | `reply --on <thread> --file <text\|->` | Answer one review thread as Cairn, in the thread. Never resolves it. Sending the same reply again posts nothing | `comment` (`id`, `url`), `change`, `created` |
+| `merge-change --id <change> --approved` | Merge a change the developer approved. Refuses to run without `--approved`, never bypasses the provider's rules, and keeps the branch. Merging a merged change again does nothing | `change` (`id`, `url`), `merged` (false when it was already merged), `method`, `commit` |
 
 Add a command here only when a feature first needs it. Then add it to every
 provider.
@@ -80,7 +81,15 @@ that protect other people's work in code:
 
 **Review stays with the reviewer.** `reply` answers in a thread with
 Cairn's marker, and checks access for `comment`. No command resolves a
-thread or dismisses a review. Feedback outside a thread is answered with
+thread or dismisses a review.
+
+**Merging needs the developer's approval.** `merge-change` fails with
+`NOT_APPROVED` before it calls the provider unless it is given
+`--approved`, which the skill passes only after the developer says yes.
+The flag is a checkpoint, not a lock: every merge names its approval, and
+tests can check that nothing merges without it. A required check, review,
+or branch rule that blocks the merge fails with `PROTECTED`, and is never
+worked around. It checks access for `merge`. Feedback outside a thread is answered with
 `comment` on the change.
 
 ## Images
@@ -146,6 +155,8 @@ Tokens, token sources, and scopes never appear in output.
 | `NOT_PUSHED` | The branch is not on the provider yet, so no change can be opened for it. |
 | `CLOSES_MISMATCH` | The change would close items it does not deliver, or would not close one it does. |
 | `INSIDE_REPO` | A file Cairn would write, such as a downloaded image, would land inside the repository. |
+| `NOT_APPROVED` | A merge or another consequential action was asked for without the developer's approval. |
+| `PROTECTED` | A required check, required review, or branch rule blocked the action. |
 | `PROVIDER_ERROR` | The provider or git rejected a change. The message carries its error text. |
 
 ## Actions
@@ -161,3 +172,4 @@ Actions are the provider-neutral names for the changes Cairn makes.
 | `link-child` | Link a work item as a child of another. |
 | `push` | Push a branch. |
 | `propose-change` | Open a change for review, such as a pull request. |
+| `merge` | Merge a change into `main`. |

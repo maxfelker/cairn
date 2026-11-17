@@ -49,6 +49,7 @@ Run each one as `node "${CLAUDE_SKILL_DIR}/providers/github.js" <command>`.
 | `get-change --id <n>` | `gh pr view --json`, GraphQL review threads and pending review, `gh api` compare with `main` | `decision`, `mergeable`, and `mergeState` are GitHub's values in lowercase, such as `changes_requested` and `behind` |
 | `get-image --url <url> --out <folder>` | Node `fetch` in a child process, with no token | Only `https` URLs on `*.githubusercontent.com` or `github.com/user-attachments` |
 | `reply --on <thread> --file -` | GraphQL `node` read, then `addPullRequestReviewThreadReply` | The thread id is the `PRRT_…` id from `get-change`, and must be in this repository. Answer a pull request's conversation with `comment --on <n>` |
+| `merge-change --id <n> --approved` | `gh pr view`, `gh repo view` merge settings, `gh pr merge --merge` | A merge commit when allowed, else squash, else rebase. Never `--admin`, `--auto`, or `--delete-branch` |
 
 How contract actions map to GitHub repository roles:
 
@@ -57,7 +58,7 @@ How contract actions map to GitHub repository roles:
 | `comment` | READ | |
 | `create-item` | READ | Issues turned on |
 | `label`, `link-child` | TRIAGE | Issues turned on |
-| `push`, `propose-change` | WRITE | |
+| `push`, `propose-change`, `merge` | WRITE | |
 
 ## Changes
 
@@ -94,7 +95,8 @@ one image, not a credential for the account.
 
 Branch protection and required reviews can still block a push or merge,
 even with the role. Report those errors as GitHub returns them, and never
-bypass them.
+bypass them. `merge-change` reports a blocked merge as `PROTECTED`. It
+keeps the branch, because another pull request may be stacked on it.
 
 ## Install and login
 

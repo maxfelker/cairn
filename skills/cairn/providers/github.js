@@ -102,6 +102,7 @@ const ACTIONS = {
   'link-child': { level: 'TRIAGE', issues: true, doing: 'linking sub-issues' },
   push: { level: 'WRITE', doing: 'pushing a branch' },
   'propose-change': { level: 'WRITE', doing: 'opening a pull request' },
+  merge: { level: 'WRITE', doing: 'merging a pull request' },
 };
 
 function rank(level) {
@@ -945,7 +946,68 @@ function getChange({ exec = run, cwd, id } = {}) {
   };
 }
 
-const THREAD_QUERY = 'query($id: ID!) { node(id: $id) { ... on PullRequestReviewThread { id isResolved pullRequest { number repository { nameWithOwner } } comments(last: 1) { nodes { databaseId url body } } } } }';
+// The merge method to use: a merge commit when the repository allows it,
+// because it keeps the change's commits and their task references. Then
+// squash, then rebase.
+const METHODS = [['mergeCommitAllowed', '--merge', 'merge'], ['squashMergeAllowed', '--squash', 'squash'], ['rebaseMergeAllowed', '--rebase', 'rebase']];
+
+// What GitHub says when a rule blocks the merge, as opposed to a broken
+// request: required checks, required reviews, and branch policies.
+const PROTECTION = /base branch policy|protected branch|required status check|approving review|review(?:s)? (?:is|are) required|changes requested|merging is blocked/i;
+
+// Merge a change, only with the developer's explicit approval. `approved`
+// is a checkpoint, not a lock: its value is that every merge names the
+// approval, and nothing merges without it. Never bypasses checks, reviews,
+// or branch protections, and keeps the branch. Merging twice is safe.
+function mergeChange({ exec = run, cwd, id, approved = false } = {}) {
+  if (!approved) {
+    return fail('NOT_APPROVED', `Pull request #${id} was not merged, because the merge was not approved.`, 'Ask the developer to approve the merge, then run merge-change again with --approved.');
+  }
+  const t = target({ exec, cwd });
+  if (!t.ok) return t;
+  const repo = t.target;
+
+  const a = access({ exec, cwd, repo, action: 'merge' });
+  if (!a.ok) return a;
+
+  const notFound = fail('TARGET_UNAVAILABLE', `Pull request #${id} was not found in ${repo}, or your gh account cannot see it.`, 'Check the change number.');
+  const read = () => exec('gh', ['pr', 'view', String(id), '--repo', repo, '--json', 'number,url,state,mergeCommit'], { cwd });
+  const before = read();
+  if (!before.ok) return ghFailed(before, `reading pull request #${id}`, notFound);
+  const pr = JSON.parse(before.stdout);
+  const change = { id: String(pr.number), url: pr.url };
+  const commit = (p) => (p.mergeCommit && p.mergeCommit.oid) || null;
+  if (pr.state === 'MERGED') return { ok: true, provider: PROVIDER, change, merged: false, commit: commit(pr) };
+  if (pr.state !== 'OPEN') return fail('TARGET_UNAVAILABLE', `Pull request #${id} is closed without being merged.`, 'Reopen it on GitHub first, if it should still merge.');
+
+  const settings = exec('gh', ['repo', 'view', repo, '--json', METHODS.map((m) => m[0]).join(',')], { cwd });
+  if (!settings.ok) return ghFailed(settings, `reading the merge settings of ${repo}`);
+  const allowed = JSON.parse(settings.stdout);
+  const method = METHODS.find((m) => allowed[m[0]]);
+  if (!method) return fail('PROVIDER_ERROR', `${repo} allows no merge method.`, 'A repository admin can allow one in Settings → General → Pull Requests.');
+
+  const merged = exec('gh', ['pr', 'merge', String(id), '--repo', repo, method[1]], { cwd });
+  if (!merged.ok) {
+    const why = `${merged.stderr}\n${merged.stdout}`.trim().split('\n').filter(Boolean)[0] || 'no details';
+    if (PROTECTION.test(merged.stderr)) {
+      return fail('PROTECTED', `GitHub did not merge pull request #${id}: ${why}`, 'Meet the rule GitHub names, such as a passing check or an approving review, then ask again. Cairn never bypasses it.');
+    }
+    return ghFailed(merged, `merging pull request #${id}`);
+  }
+
+  const after = read();
+  const done = after.ok ? JSON.parse(after.stdout) : {};
+  return { ok: true, provider: PROVIDER, change, merged: true, method: method[2], commit: commit(done) };
+}
+
+function mergeChangeArgs(args) {
+  const approved = args.includes('--approved');
+  const f = flags(args.filter((a) => a !== '--approved'), ['id']);
+  if (!f || !/^\d+$/.test(f.id || '')) return null;
+  return mergeChange({ id: f.id, approved });
+}
+
+const THREAD_QUERY ='query($id: ID!) { node(id: $id) { ... on PullRequestReviewThread { id isResolved pullRequest { number repository { nameWithOwner } } comments(last: 1) { nodes { databaseId url body } } } } }';
 const REPLY_MUTATION = 'mutation($id: ID!, $body: String!) { addPullRequestReviewThreadReply(input: { pullRequestReviewThreadId: $id, body: $body }) { comment { databaseId url } } }';
 
 // Reply inside one review thread, so the answer stays next to the feedback.
@@ -1183,10 +1245,11 @@ const commands = {
   'get-change': getChangeArgs,
   'get-image': getImageArgs,
   reply: replyArgs,
+  'merge-change': mergeChangeArgs,
 };
 
 if (require.main === module) {
   process.exitCode = cli(commands, process.argv.slice(2));
 }
 
-module.exports = { name: PROVIDER, commands, marker, comment, actions: ACTIONS, kinds: KIND_LABELS, parseRemote, target, auth, access, check, findItem, getItem, listItems, orderChildren, saveItem, startChange, pushChange, saveChange, getChange, getImage, reply, imagesOf, isCairn, checksOf, withLinks };
+module.exports = { name: PROVIDER, commands, marker, comment, actions: ACTIONS, kinds: KIND_LABELS, parseRemote, target, auth, access, check, findItem, getItem, listItems, orderChildren, saveItem, startChange, pushChange, saveChange, getChange, getImage, reply, mergeChange, imagesOf, isCairn, checksOf, withLinks };

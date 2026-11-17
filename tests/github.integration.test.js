@@ -40,7 +40,7 @@ test('check: READ access lists what it allows', () => {
 test('the mock gh rejects commands it does not model', () => {
   const gh = fakeGitHub();
   const { spawnSync } = require('node:child_process');
-  const r = spawnSync('gh', ['pr', 'merge', '1'], { env: gh.env, encoding: 'utf8' });
+  const r = spawnSync('gh', ['pr', 'close', '1'], { env: gh.env, encoding: 'utf8' });
   assert.equal(r.status, 64);
   assert.match(r.stderr, /unsupported command/);
 });
@@ -1184,4 +1184,89 @@ test('reply: an empty reply and wrong usage post nothing, and nothing resolves o
   assert.equal(gh.run('reply', '--on', 'bad id', '--file', 'x').status, 2);
   assert.equal(gh.state().pulls[0].threads[0].comments.length, 1);
   assert.equal(gh.state().calls.filter((c) => c.some((a) => /resolveReviewThread|dismissPullRequestReview/.test(a))).length, 0, 'nothing resolves or dismisses');
+});
+
+// merge-change: merges only with explicit approval.
+
+const ghCalls = (gh, sub) => gh.state().calls.filter((c) => c[0] === 'pr' && c[1] === sub);
+
+test('merge-change: without --approved, nothing is called and nothing merges', () => {
+  const gh = changeFor();
+  const { status, json } = gh.run('merge-change', '--id', '30');
+  assert.equal(status, 1);
+  assert.equal(json.code, 'NOT_APPROVED');
+  assert.deepEqual(gh.state().calls, [], 'no call to GitHub at all');
+  assert.equal(gh.state().pulls[0].state, 'OPEN');
+});
+
+test('merge-change: with --approved, the change merges with a merge commit, closes its items, and keeps the branch', () => {
+  const gh = changeFor();
+  const { status, json } = gh.run('merge-change', '--id', '30', '--approved');
+  assert.equal(status, 0, JSON.stringify(json));
+  assert.deepEqual(json, { ok: true, provider: 'github', change: { id: '30', url: 'https://github.com/octo/repo/pull/30' }, merged: true, method: 'merge', commit: 'c0ffee0000000000000000000000000000000000' });
+  const s = gh.state();
+  assert.equal(s.pulls[0].mergedWith, 'merge');
+  assert.equal(s.issues.find((i) => i.number === 8).state, 'CLOSED');
+  const merge = ghCalls(gh, 'merge')[0];
+  for (const never of ['--admin', '--auto', '--delete-branch']) assert.ok(!merge.includes(never), never);
+});
+
+test('merge-change: uses squash, then rebase, when the repository does not allow merge commits', () => {
+  const squash = changeFor();
+  const st = squash.state();
+  st.mergeMethods = { merge: false };
+  require('node:fs').writeFileSync(squash.env.FAKE_GH_STATE, JSON.stringify(st));
+  assert.equal(squash.run('merge-change', '--id', '30', '--approved').json.method, 'squash');
+
+  const rebase = changeFor();
+  const st2 = rebase.state();
+  st2.mergeMethods = { merge: false, squash: false };
+  require('node:fs').writeFileSync(rebase.env.FAKE_GH_STATE, JSON.stringify(st2));
+  assert.equal(rebase.run('merge-change', '--id', '30', '--approved').json.method, 'rebase');
+});
+
+test('merge-change: a branch protection failure is reported as PROTECTED, and not retried another way', () => {
+  const gh = changeFor({ blockedBy: 'the base branch policy prohibits the merge.' });
+  const { status, json } = gh.run('merge-change', '--id', '30', '--approved');
+  assert.equal(status, 1);
+  assert.equal(json.code, 'PROTECTED');
+  assert.match(json.message, /base branch policy/);
+  assert.match(json.fix, /never bypasses/);
+  assert.equal(ghCalls(gh, 'merge').length, 1, 'one attempt only');
+  assert.equal(gh.state().pulls[0].state, 'OPEN');
+});
+
+test('merge-change: a conflict is a provider error, not a protection', () => {
+  const gh = changeFor({ mergeable: 'CONFLICTING' });
+  const { json } = gh.run('merge-change', '--id', '30', '--approved');
+  assert.equal(json.code, 'PROVIDER_ERROR');
+  assert.match(json.message, /cleanly/);
+});
+
+test('merge-change: a second run on a merged change succeeds and merges nothing', () => {
+  const gh = changeFor();
+  gh.run('merge-change', '--id', '30', '--approved');
+  const { status, json } = gh.run('merge-change', '--id', '30', '--approved');
+  assert.equal(status, 0, JSON.stringify(json));
+  assert.equal(json.merged, false);
+  assert.equal(json.commit, 'c0ffee0000000000000000000000000000000000');
+  assert.equal(ghCalls(gh, 'merge').length, 1);
+});
+
+test('merge-change: missing access, an unknown change, a closed change, and wrong usage merge nothing', () => {
+  const readOnly = changeFor();
+  const st = readOnly.state();
+  st.permission = 'TRIAGE';
+  require('node:fs').writeFileSync(readOnly.env.FAKE_GH_STATE, JSON.stringify(st));
+  assert.equal(readOnly.run('merge-change', '--id', '30', '--approved').json.code, 'MISSING_PERMISSION');
+  assert.equal(ghCalls(readOnly, 'merge').length, 0);
+
+  const gh = changeFor({ state: 'CLOSED' });
+  assert.equal(gh.run('merge-change', '--id', '99', '--approved').json.code, 'TARGET_UNAVAILABLE');
+  const closed = gh.run('merge-change', '--id', '30', '--approved').json;
+  assert.equal(closed.code, 'TARGET_UNAVAILABLE');
+  assert.match(closed.message, /closed without being merged/);
+  assert.equal(gh.run('merge-change', '--approved').status, 2);
+  assert.equal(gh.run('merge-change', '--id', '30', '--approved', 'yes').status, 2);
+  assert.equal(ghCalls(gh, 'merge').length, 0);
 });

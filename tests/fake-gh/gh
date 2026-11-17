@@ -16,7 +16,9 @@
 //              checks: [statusCheckRollup entries], reviewDecision, mergeable, mergeState,
 //              behind: commits on main the head lacks, pendingReview: true when the viewer has one,
 //              threads: [{id, resolved, outdated, path, line, comments: [{id, author, body}]}],
-//              comments: [{id, author, body}] on the conversation, reviews: [{id, author, state, body}]}],
+//              comments: [{id, author, body}] on the conversation, reviews: [{id, author, state, body}],
+//              blockedBy: the message GitHub gives when a rule blocks the merge}],
+//     mergeMethods: {merge, squash, rebase} (all true by default),
 //
 // With the full+json media type (`-H 'Accept: application/vnd.github.full+json'`),
 // REST results add `body_html`, and GraphQL gives `bodyHTML`, as GitHub does.
@@ -231,7 +233,15 @@ if (group === 'repo' && cmd === 'view') {
   const opts = parseGhFlags(rest_);
   requireLogin();
   requireRepo(opts._[0]);
-  const view = { nameWithOwner: state.repo, viewerPermission: state.permission, hasIssuesEnabled: state.issuesEnabled !== false };
+  const methods = { merge: true, squash: true, rebase: true, ...(state.mergeMethods || {}) };
+  const view = {
+    nameWithOwner: state.repo,
+    viewerPermission: state.permission,
+    hasIssuesEnabled: state.issuesEnabled !== false,
+    mergeCommitAllowed: methods.merge,
+    squashMergeAllowed: methods.squash,
+    rebaseMergeAllowed: methods.rebase,
+  };
   json(Object.fromEntries(opts.json.split(',').map((f) => [f, view[f]])));
 }
 
@@ -276,8 +286,11 @@ if (group === 'issue' && cmd === 'develop') {
 }
 
 if (group === 'pr') {
-  if (!['list', 'create', 'edit', 'view'].includes(cmd)) unsupported('command');
-  const opts = parsePairs(rest_);
+  if (!['list', 'create', 'edit', 'view', 'merge'].includes(cmd)) unsupported('command');
+  const opts = parsePairs(rest_, ['--merge', '--squash', '--rebase']);
+  for (const never of ['admin', 'auto', 'delete-branch']) {
+    if (rest_.includes(`--${never}`)) unsupported(`flag --${never}, which Cairn must never pass`);
+  }
   requireLogin();
   requireRepo(opts.repo);
   const findPull = (n) => {
@@ -322,8 +335,27 @@ if (group === 'pr') {
       reviewDecision: pull.reviewDecision || '',
       mergeable: pull.mergeable || 'MERGEABLE',
       mergeStateStatus: pull.mergeState || 'CLEAN',
+      mergeCommit: pull.mergeCommit ? { oid: pull.mergeCommit } : null,
     };
     json(Object.fromEntries(opts.json.split(',').map((f) => [f, view[f]])));
+  }
+
+  if (cmd === 'merge') {
+    const pull = findPull(opts._[0]);
+    const method = ['merge', 'squash', 'rebase'].filter((m) => opts[m]);
+    if (method.length !== 1) done('', 1, '--merge, --rebase, or --squash required when not running interactively\n');
+    if (!atLeast('WRITE')) done('', 1, 'GraphQL: Resource not accessible by integration (mergePullRequest)\n');
+    if (pull.state === 'MERGED') done('', 1, `Pull request ${state.repo}#${pull.number} was already merged\n`);
+    if (pull.blockedBy) done('', 1, `X Pull request ${state.repo}#${pull.number} is not mergeable: ${pull.blockedBy}\n`);
+    if (pull.mergeable === 'CONFLICTING') done('', 1, `X Pull request ${state.repo}#${pull.number} is not mergeable: the merge commit cannot be cleanly created.\n`);
+    pull.state = 'MERGED';
+    pull.mergedWith = method[0];
+    pull.mergeCommit = 'c0ffee0000000000000000000000000000000000';
+    for (const n of closesOf(pull)) {
+      const issue = state.issues.find((i) => i.number === n);
+      if (issue) issue.state = 'CLOSED';
+    }
+    done(`✓ Merged pull request ${state.repo}#${pull.number}\n`);
   }
 
   unsupported('command');
