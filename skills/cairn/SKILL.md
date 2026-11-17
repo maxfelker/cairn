@@ -536,12 +536,19 @@ These rules have no exceptions:
    the branch is done. When you cannot tell from the commit messages, read
    the diff. Do not build a task twice.
 4. **Build the tasks in order.** Take the unit's open children in the
-   order `get-item` lists them. For each one:
+   order `get-item` lists them. Build them one after another, without
+   stopping to report or to ask whether to go on. The tasks were thought
+   through when the feature was broken down, and the developer sees the
+   finished feature through its change. Stop early only when you are
+   blocked, or need a decision or approval that is the developer's. For
+   each one:
    - Read it with `get-item`, and build what it asks for. Follow its
      implementation guidance and its validation.
    - Run the project's own checks, and fix what fails.
-   - Commit in steps that each make sense alone. Stage files by name, and
-     only files this work changed. Never stage everything.
+   - Make each task one commit: the task is the commit boundary, so a
+     reviewer can read the change task by task. Split a task into more
+     commits only when one commit would mix unrelated steps. Stage files
+     by name, and only files this work changed. Never stage everything.
    - Write a commit message a person can read. The first line says what
      changed, in plain words. After a blank line, say why, when the reason
      is not obvious. End with the task on its own line, as
