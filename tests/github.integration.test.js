@@ -894,3 +894,107 @@ test('save-change: an unpushed branch, main, and missing access are refused befo
   assert.equal(onMain.run('save-change', '--for', '8', '--file', 'x.md', '--closes', '21').status, 2, '--closes needs --partial');
   assert.equal(onMain.run('save-change', '--for', '8', '--file', onMain.draft('bad.md', 'No title\n')).json.code, 'INVALID_DRAFT');
 });
+
+// A feature #8 with one open pull request, #30, from its linked branch.
+function changeFor(pull = {}) {
+  return fakeGitHub({
+    issues: [{ number: 8, title: 'Let players zoom the map', type: 'Feature', labels: ['feature'] }],
+    issueTypes: ['Feature', 'Task'],
+    linkedBranches: { 8: ['8-zoom'] },
+    pulls: [{ number: 30, state: 'OPEN', head: '8-zoom', title: 'Zoom', body: 'Zoom.\n\nCloses #8\n', ...pull }],
+  });
+}
+
+test('get-change: a ready change with passing checks, an approval, and no threads', () => {
+  const gh = changeFor({
+    checks: [{ __typename: 'CheckRun', name: 'test', status: 'COMPLETED', conclusion: 'SUCCESS' }, { __typename: 'StatusContext', context: 'ci/lint', state: 'SUCCESS' }],
+    reviewDecision: 'APPROVED',
+  });
+  const { status, json } = gh.run('get-change', '--id', '30');
+  assert.equal(status, 0, JSON.stringify(json));
+  assert.deepEqual(json, {
+    ok: true,
+    provider: 'github',
+    change: { id: '30', url: 'https://github.com/octo/repo/pull/30', state: 'open', branch: '8-zoom', closes: ['8'] },
+    checks: { state: 'passed', runs: [{ name: 'test', state: 'passed' }, { name: 'ci/lint', state: 'passed' }] },
+    review: { decision: 'approved', pending: false },
+    mergeable: 'mergeable',
+    mergeState: 'clean',
+    behind: 0,
+    threads: [],
+  });
+});
+
+test('get-change: failing and pending checks, and resolved, outdated, and open threads', () => {
+  const gh = changeFor({
+    checks: [
+      { __typename: 'CheckRun', name: 'test', status: 'COMPLETED', conclusion: 'FAILURE' },
+      { __typename: 'CheckRun', name: 'build', status: 'IN_PROGRESS', conclusion: null },
+    ],
+    reviewDecision: 'CHANGES_REQUESTED',
+    threads: [
+      { id: 'T1', resolved: true, path: 'map.js', line: 4, comments: [{ id: 501, author: 'rev', body: 'Rename this.' }] },
+      { id: 'T2', outdated: true, path: 'map.js', line: null, comments: [{ id: 502, author: 'rev', body: 'Old line.' }] },
+      { id: 'T3', path: 'zoom.js', line: 12, comments: [{ id: 503, author: 'rev', body: 'Clamp the zoom?' }, { id: 504, author: 'octo', body: 'Done in abc123.\n\n<!-- cairn -->' }] },
+    ],
+  });
+  const { status, json } = gh.run('get-change', '--id', '30');
+  assert.equal(status, 0, JSON.stringify(json));
+  assert.equal(json.checks.state, 'failed');
+  assert.deepEqual(json.checks.runs.map((r) => r.state), ['failed', 'pending']);
+  assert.equal(json.review.decision, 'changes_requested');
+  assert.deepEqual(json.threads.map((t) => [t.id, t.resolved, t.outdated]), [['T1', true, false], ['T2', false, true], ['T3', false, false]]);
+  const t3 = json.threads[2];
+  assert.equal(t3.path, 'zoom.js');
+  assert.equal(t3.line, 12);
+  assert.deepEqual(t3.comments.map((c) => [c.id, c.author, c.cairn]), [['503', 'rev', false], ['504', 'octo', true]]);
+  assert.match(t3.comments[0].url, /\/pull\/30#discussion_r503$/);
+});
+
+test('get-change: pending checks only give pending, and no checks give none', () => {
+  const pending = changeFor({ checks: [{ __typename: 'StatusContext', context: 'ci', state: 'PENDING' }] });
+  assert.equal(pending.run('get-change', '--id', '30').json.checks.state, 'pending');
+  assert.deepEqual(changeFor().run('get-change', '--id', '30').json.checks, { state: 'none', runs: [] });
+});
+
+test('get-change: a change behind main, and a change with conflicts', () => {
+  const behind = changeFor({ behind: 3, mergeState: 'BEHIND' });
+  const a = behind.run('get-change', '--id', '30').json;
+  assert.equal(a.behind, 3);
+  assert.equal(a.mergeState, 'behind');
+
+  const conflict = changeFor({ mergeable: 'CONFLICTING', mergeState: 'DIRTY' });
+  const b = conflict.run('get-change', '--id', '30').json;
+  assert.equal(b.mergeable, 'conflicting');
+  assert.equal(b.mergeState, 'dirty');
+});
+
+test('get-change: a pending review by the current user is reported', () => {
+  const gh = changeFor({ pendingReview: true });
+  assert.equal(gh.run('get-change', '--id', '30').json.review.pending, true);
+});
+
+test('get-change: a merged change has no branch comparison', () => {
+  const gh = changeFor({ state: 'MERGED' });
+  const { status, json } = gh.run('get-change', '--id', '30');
+  assert.equal(status, 0, JSON.stringify(json));
+  assert.equal(json.change.state, 'merged');
+  assert.equal(json.behind, null);
+  assert.equal(gh.state().calls.filter((c) => c[0] === 'api' && /compare/.test(c.join(' '))).length, 0);
+});
+
+test('get-change: an unknown change and wrong usage are refused', () => {
+  const gh = changeFor();
+  const { status, json } = gh.run('get-change', '--id', '99');
+  assert.equal(status, 1);
+  assert.equal(json.code, 'TARGET_UNAVAILABLE');
+  assert.equal(gh.run('get-change').status, 2);
+  assert.equal(gh.run('get-change', '--id', 'abc').status, 2);
+});
+
+test('get-change: it only reads', () => {
+  const gh = changeFor({ threads: [{ id: 'T1', comments: [{ id: 501, author: 'rev', body: 'Hm.' }] }] });
+  gh.run('get-change', '--id', '30');
+  const writes = gh.state().calls.filter((c) => c.includes('-X') || ['create', 'edit', 'merge'].includes(c[1]));
+  assert.deepEqual(writes, []);
+});

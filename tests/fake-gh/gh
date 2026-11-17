@@ -11,8 +11,11 @@
 //               type: name|null, parent: number|null, comments: [{author, body}],
 //               pull: true when the number is a pull request, as GitHub's issues API returns them}],
 //     pulls: [{number, state: "MERGED"|"OPEN"|"CLOSED", closes: [issue numbers],
-//              head, title, body}],   a pull with a body closes what GitHub would:
+//              head, title, body,     a pull with a body closes what GitHub would:
 //                                     closing words in the body, and issues its branch is linked to
+//              checks: [statusCheckRollup entries], reviewDecision, mergeable, mergeState,
+//              behind: commits on main the head lacks, pendingReview: true when the viewer has one,
+//              threads: [{id, resolved, outdated, path, line, comments: [{id, author, body}]}]}],
 //     linkedBranches: {"<issue number>": [branch names]},
 //     calls: [[...argv]] }
 //
@@ -283,7 +286,17 @@ if (group === 'pr') {
 
   if (cmd === 'view') {
     const pull = findPull(opts._[0]);
-    const view = { number: pull.number, url: pullUrl(pull.number), closingIssuesReferences: closesOf(pull).map((number) => ({ number })) };
+    const view = {
+      number: pull.number,
+      url: pullUrl(pull.number),
+      state: pull.state,
+      headRefName: pull.head,
+      closingIssuesReferences: closesOf(pull).map((number) => ({ number })),
+      statusCheckRollup: pull.checks || [],
+      reviewDecision: pull.reviewDecision || '',
+      mergeable: pull.mergeable || 'MERGEABLE',
+      mergeStateStatus: pull.mergeState || 'CLEAN',
+    };
     json(Object.fromEntries(opts.json.split(',').map((f) => [f, view[f]])));
   }
 
@@ -314,12 +327,35 @@ if (group === 'api') {
         .map((p) => ({ number: p.number, url: `https://github.com/${state.repo}/pull/${p.number}`, state: p.state }));
       json({ data: { repository: { issue: { closedByPullRequestsReferences: { nodes } } } } });
     }
+    if (/reviewThreads/.test(q)) {
+      requireRepo(`${opts.fields.owner}/${opts.fields.name}`);
+      const pull = state.pulls.find((p) => p.number === Number(opts.fields.number));
+      if (!pull) done('', 1, `gh: Could not resolve to a PullRequest with the number of ${opts.fields.number}.\n`);
+      const nodes = (pull.threads || []).map((th) => ({
+        id: th.id,
+        isResolved: !!th.resolved,
+        isOutdated: !!th.outdated,
+        path: th.path || null,
+        line: th.line === undefined ? null : th.line,
+        comments: { nodes: th.comments.map((c) => ({ databaseId: c.id, author: { login: c.author }, body: c.body, url: `${pullUrl(pull.number)}#discussion_r${c.id}` })) },
+      }));
+      json({ data: { repository: { pullRequest: { reviews: { totalCount: pull.pendingReview ? 1 : 0 }, reviewThreads: { nodes } } } } });
+    }
     unsupported('graphql query');
   }
 
   const [pathPart, queryPart = ''] = opts.path.split('?');
   const query = Object.fromEntries(new URLSearchParams(queryPart));
   const restComment = (issue, c) => ({ id: c.id, body: c.body, user: { login: c.author }, html_url: `https://github.com/${state.repo}/issues/${issue.number}#issuecomment-${c.id}` });
+
+  const compare = /^repos\/([^/]+\/[^/]+)\/compare\/([^.]+)\.\.\.(.+)$/.exec(pathPart);
+  if (compare && opts.method === 'GET') {
+    requireRepo(compare[1]);
+    const head = decodeURIComponent(compare[3]);
+    const pull = state.pulls.find((p) => p.head === head && p.state === 'OPEN');
+    if (!pull) httpError(404, 'Not Found');
+    json({ behind_by: pull.behind || 0, ahead_by: 1, status: pull.behind ? 'diverged' : 'ahead' });
+  }
 
   const editComment = /^repos\/([^/]+\/[^/]+)\/issues\/comments\/(\d+)$/.exec(pathPart);
   if (editComment && opts.method === 'PATCH') {

@@ -46,6 +46,7 @@ Run each one as `node "${CLAUDE_SKILL_DIR}/providers/github.js" <command>`.
 | `start-change --for <n> [--partial <name>]` | `gh issue develop`, `git fetch`, `git checkout` | The linked branch gets GitHub's own name. A partial branch is `<n>-<name>` |
 | `push-change` | `git ls-remote`, `git push -u origin HEAD` | No force flag, ever |
 | `save-change --for <n> --file - [--partial [--closes <n,n>]]` | `gh pr list`, `gh pr create` or `gh pr edit`, `gh pr view` | Ends the description with `Closes #n` lines, or `Part of #n.` |
+| `get-change --id <n>` | `gh pr view --json`, GraphQL review threads and pending review, `gh api` compare with `main` | `decision`, `mergeable`, and `mergeState` are GitHub's values in lowercase, such as `changes_requested` and `behind` |
 
 How contract actions map to GitHub repository roles:
 
@@ -72,6 +73,11 @@ How contract actions map to GitHub repository roles:
   `CLOSES_MISMATCH` when this happens.
 - GitHub works out the closing links a moment after the description is
   saved, so `save-change` reads them up to three times.
+- **Review threads are GraphQL only.** Resolved and outdated state, and a
+  pending review, are not in the REST API. A pending review is visible
+  only to its author, so `review.pending` is always the user's own.
+  `get-change` reads the first 100 threads, and the first 100 comments in
+  each.
 
 Branch protection and required reviews can still block a push or merge,
 even with the role. Report those errors as GitHub returns them, and never

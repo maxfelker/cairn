@@ -828,6 +828,114 @@ function saveChange({ exec = run, cwd, id, file, partial = false, closes = [] } 
   return { ...result, change, closes: got };
 }
 
+// Is this comment Cairn's? It is when a line is the plain or keyed marker.
+const MARKER_LINE = /^<!-- cairn(?: key=\S+)? -->$/;
+function isCairn(body) {
+  return (body || '').split('\n').some((line) => MARKER_LINE.test(line.trim()));
+}
+
+// One check in the contract's words: passed, failed, or pending. GitHub
+// reports check runs (status and conclusion) and commit statuses (state).
+const PASSED = ['SUCCESS', 'NEUTRAL', 'SKIPPED'];
+function checkRun(c) {
+  let state;
+  if (c.status !== undefined) state = c.status !== 'COMPLETED' ? 'pending' : PASSED.includes(c.conclusion) ? 'passed' : 'failed';
+  else state = c.state === 'SUCCESS' ? 'passed' : ['PENDING', 'EXPECTED'].includes(c.state) ? 'pending' : 'failed';
+  return { name: c.name || c.context, state };
+}
+
+// All checks, with one overall state: failed if any failed, pending if any
+// is still running, passed when all passed, none when there are no checks.
+function checksOf(rollup) {
+  const runs = (rollup || []).map(checkRun);
+  const has = (s) => runs.some((r) => r.state === s);
+  const state = !runs.length ? 'none' : has('failed') ? 'failed' : has('pending') ? 'pending' : 'passed';
+  return { state, runs };
+}
+
+const lower = (v) => (v ? String(v).toLowerCase() : null);
+
+// Turn a failed `gh` call into a contract result.
+function ghFailed(r, what, notFound) {
+  if (r.missing) return fail('CLI_MISSING', 'The GitHub CLI (gh) is not installed.', 'Install it from https://cli.github.com, then run gh auth login.');
+  if (/gh auth login/.test(r.stderr)) return fail('NOT_LOGGED_IN', `gh is not logged in to ${HOST}.`, LOGIN_FIX);
+  if (notFound && /Could not resolve to a PullRequest/.test(r.stderr)) return notFound;
+  return providerError(what, r);
+}
+
+const THREADS_QUERY = 'query($owner: String!, $name: String!, $number: Int!) { repository(owner: $owner, name: $name) { pullRequest(number: $number) { reviews(states: PENDING, first: 1) { totalCount } reviewThreads(first: 100) { nodes { id isResolved isOutdated path line comments(first: 100) { nodes { databaseId author { login } body url } } } } } } }';
+
+// Everything review and readiness depend on, read once: the change, its
+// checks, its review state, whether it can merge, how far it is behind the
+// base branch, and its review threads. Values are GitHub's own; GitHub's
+// merge rules are not reimplemented here.
+function getChange({ exec = run, cwd, id } = {}) {
+  const t = target({ exec, cwd });
+  if (!t.ok) return t;
+  const repo = t.target;
+  const ctx = { exec, cwd };
+  const notFound = fail('TARGET_UNAVAILABLE', `Pull request #${id} was not found in ${repo}, or your gh account cannot see it.`, 'Check the change number.');
+
+  const fields = 'number,url,state,headRefName,closingIssuesReferences,statusCheckRollup,reviewDecision,mergeable,mergeStateStatus';
+  const view = exec('gh', ['pr', 'view', String(id), '--repo', repo, '--json', fields], { cwd });
+  if (!view.ok) return ghFailed(view, `reading pull request #${id}`, notFound);
+  const pr = JSON.parse(view.stdout);
+
+  // Review threads and a pending review exist only in GraphQL. A pending
+  // review is visible only to its author, so any pending review found is
+  // the current user's.
+  const [owner, name] = repo.split('/');
+  const res = api(ctx, ['graphql', '-f', `query=${THREADS_QUERY}`, '-f', `owner=${owner}`, '-f', `name=${name}`, '-F', `number=${id}`]);
+  if (!res.ok) return failed(res, `reading the review threads of pull request #${id}`);
+  const p = res.data.data.repository.pullRequest;
+
+  // How many base-branch commits the branch lacks. Only an open change has
+  // a branch to compare.
+  let behind = null;
+  if (pr.state === 'OPEN') {
+    const cmp = api(ctx, [`repos/${repo}/compare/${BASE}...${encodeURIComponent(pr.headRefName)}`]);
+    if (!cmp.ok) return failed(cmp, `comparing ${pr.headRefName} with ${BASE}`);
+    behind = cmp.data.behind_by;
+  }
+
+  return {
+    ok: true,
+    provider: PROVIDER,
+    change: {
+      id: String(pr.number),
+      url: pr.url,
+      state: lower(pr.state),
+      branch: pr.headRefName,
+      closes: pr.closingIssuesReferences.map((i) => String(i.number)),
+    },
+    checks: checksOf(pr.statusCheckRollup),
+    review: { decision: lower(pr.reviewDecision), pending: p.reviews.totalCount > 0 },
+    mergeable: lower(pr.mergeable),
+    mergeState: lower(pr.mergeStateStatus),
+    behind,
+    threads: p.reviewThreads.nodes.map((th) => ({
+      id: th.id,
+      resolved: th.isResolved,
+      outdated: th.isOutdated,
+      path: th.path,
+      line: th.line,
+      comments: th.comments.nodes.map((c) => ({
+        id: String(c.databaseId),
+        author: c.author && c.author.login,
+        body: c.body,
+        url: c.url,
+        cairn: isCairn(c.body),
+      })),
+    })),
+  };
+}
+
+function getChangeArgs(args) {
+  const f = flags(args, ['id']);
+  if (!f || !/^\d+$/.test(f.id || '')) return null;
+  return getChange({ id: f.id });
+}
+
 function startChangeArgs(args) {
   const f = flags(args, ['for', 'partial']);
   if (!f || !/^\d+$/.test(f.for || '')) return null;
@@ -877,10 +985,11 @@ const commands = {
   'start-change': startChangeArgs,
   'push-change': (args) => (args.length ? null : pushChange()),
   'save-change': saveChangeArgs,
+  'get-change': getChangeArgs,
 };
 
 if (require.main === module) {
   process.exitCode = cli(commands, process.argv.slice(2));
 }
 
-module.exports = { name: PROVIDER, commands, marker, comment, actions: ACTIONS, kinds: KIND_LABELS, parseRemote, target, auth, access, check, findItem, getItem, listItems, orderChildren, saveItem, startChange, pushChange, saveChange, withLinks };
+module.exports = { name: PROVIDER, commands, marker, comment, actions: ACTIONS, kinds: KIND_LABELS, parseRemote, target, auth, access, check, findItem, getItem, listItems, orderChildren, saveItem, startChange, pushChange, saveChange, getChange, isCairn, checksOf, withLinks };
