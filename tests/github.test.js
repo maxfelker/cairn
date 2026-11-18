@@ -150,7 +150,7 @@ function repoView(viewerPermission, hasIssuesEnabled = true) {
 
 // Every row of the action table, at the boundary role and one role below.
 const MINIMUM = {
-  comment: 'READ', 'create-item': 'READ', label: 'TRIAGE', 'link-child': 'TRIAGE', push: 'WRITE', 'propose-change': 'WRITE', merge: 'WRITE',
+  comment: 'READ', 'create-item': 'READ', label: 'TRIAGE', 'link-child': 'TRIAGE', push: 'WRITE', 'propose-change': 'WRITE', merge: 'WRITE', release: 'WRITE',
 };
 const LEVELS = ['NONE', 'READ', 'TRIAGE', 'WRITE', 'MAINTAIN', 'ADMIN'];
 
@@ -243,4 +243,11 @@ test('check surfaces the first gap and does not call gh for a repo it cannot fin
   assert.equal(result.access.code, 'NO_REMOTE');
   assert.equal(result.auth.code, 'NOT_LOGGED_IN');
   assert.equal(ghCalls, 1, 'only auth calls gh');
+});
+
+test('latestTag picks the highest SemVer tag and ignores the rest', () => {
+  assert.equal(github.latestTag(['v0.9.0', 'v0.10.0', 'v0.2.1', 'nightly', 'v1.0.0-rc.1']), 'v0.10.0');
+  assert.equal(github.latestTag(['1.2.3', '1.10.0']), '1.10.0');
+  assert.equal(github.latestTag(['nightly']), null);
+  assert.equal(github.latestTag([]), null);
 });

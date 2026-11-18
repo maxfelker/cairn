@@ -8,8 +8,10 @@ description: >
   build epic #1?"), work on, pick up, or continue an item by number, link, or
   description ("work on #42", "pick up the next task", "work on the camera
   feature"), address issue or review feedback, check whether a pull request is
-  ready or merge one ("is #31 ready?", "merge PR #31"), or cut a release, and when they ask whether Cairn is set up or ready ("is Cairn set
-  up?", "check Cairn").
+  ready or merge one ("is #31 ready?", "merge PR #31"), prepare or cut a
+  release ("prepare a release", "package this as the next release"), and
+  when they ask whether Cairn is set up or ready ("is Cairn set up?", "check
+  Cairn").
 license: GPL-3.0-only
 # Pre-approve only the read-only setup checks and Cairn's own adapters, so the
 # user is not prompted for each one. Add a line for each new provider.
@@ -21,6 +23,7 @@ allowed-tools:
   - Bash(node "${CLAUDE_SKILL_DIR}/structure.js":*)
   - Bash(node "${CLAUDE_SKILL_DIR}/next.js":*)
   - Bash(node "${CLAUDE_SKILL_DIR}/architecture.js":*)
+  - Bash(node "${CLAUDE_SKILL_DIR}/release.js":*)
   - Bash(node "${CLAUDE_SKILL_DIR}/providers/github.js":*)
   - Bash(git status:*)
   - Bash(git log:*)
@@ -593,6 +596,78 @@ then reads as a running record of shipped capabilities.
    also names the two summary lines.
 4. **Reply** with the link to the comment.
 
+### Prepare a release
+
+Use this when the user asks to release what has merged ("prepare a
+release", "package this as the next release", "cut v0.2.0"). Cairn gathers
+the work since the last release, proposes a version with its reason and the
+notes, and publishes only after the developer says yes.
+
+1. **Gather the work.** Run `list-changes`. Add `--merged-since <tag>` only
+   when the user names the release to start from.
+2. **Stop when `main` is not ready.** Say what is wrong and how to fix it,
+   and draft nothing, when:
+   - `tags.match` is false: the latest version tag here and on the provider
+     differ. Name both. The developer decides which is right. Do not fetch,
+     push, or delete tags yourself.
+   - `main.match` is false: the clone's `main` differs from the
+     provider's. Suggest `git pull` on `main`.
+   - `main.checks.state` is `failed` or `pending`: name each run that is
+     not passing. With `none`, go on, but say `main` has no checks.
+   - `changes` is empty: there is nothing to release since `since.tag`.
+3. **Propose the version.** Give each change one kind, from the change and
+   the items it closes:
+   - `breaking`: people who use the product must change what they do, such
+     as a renamed or removed command, or a changed result.
+   - `feature`: it closes a feature, or adds something people can do.
+   - `fix`: anything else, such as a bug fix, docs, or tests.
+
+   Pipe `{"since": <since.tag or null>, "changes": [{"id", "title",
+   "kind"}]}` to `release.js next-version -`. Use the `tag` it returns, and
+   give its `reason`. Say which changes you counted as breaking, and why.
+4. **Draft the notes** in the plain style of **Comments**, for someone who
+   uses the product and did not follow the work:
+
+   ```markdown
+   <One or two sentences: what people can do with this release.>
+
+   ## What's new
+   - <a capability, in plain words> (<feature>, <change>)
+
+   ## Fixes
+   - <what works now that did not> (<item>, <change>)
+
+   ## Technical changes
+   - <what changed underneath, when it matters to someone> (<change>)
+   ```
+
+   Group the work by feature. Group tasks under their feature, and leave
+   them out of the notes on their own. Leave out a section with nothing
+   in it. Write every reference in the provider's short form.
+5. **Show it and wait.** Show the version, its reason, the notes, and the
+   `main` commit it will tag, with its checks. If the repository records
+   its version in a file, such as `package.json` or a plugin manifest, and
+   that file does not say the new version, say so: the release will not
+   change it. Then wait for an explicit yes. A yes to an earlier version
+   or other notes does not count.
+6. **Publish on a yes.** Pipe the notes to
+   `publish-release --tag <tag> --target <main.remote> --file - --approved`.
+   - `TAG_EXISTS`, `MAIN_MISMATCH`, or `CHECKS_FAILING`: report it as it
+     is, with its fix. Never pick another tag or target to get around it.
+     Run `list-changes` again before proposing anything new.
+7. **Link the release.** Comment on each feature in `items`, and on each
+   epic that is the `parent` of one of them, with
+   `comment --on <id> --key release-<tag> --file -`. Keep it to one line
+   and one sentence:
+
+   ```
+   **Released in <tag>:** <release url>
+
+   <What this item gained in the release, in one sentence.>
+   ```
+
+8. **Reply** with the link to the release, and the items you commented on.
+
 ### Work on an item
 
 Use this when the user names something to work on, in any words ("work on
@@ -640,8 +715,8 @@ must reach the same step.
      the user already asked you to work on the item or address the
      feedback.
    - `finish-feature`: run **Finish a feature**.
-   - `release`: say every feature is closed. Releasing is not supported
-     yet.
+   - `release`: say every feature is closed, and offer **Prepare a
+     release**. It publishes, so it always waits for the developer's yes.
    - `done`: say it is closed, and offer the next open sibling if the
      parent has one.
    - `implement` or `continue-change`: get the parent with `get-item` too.

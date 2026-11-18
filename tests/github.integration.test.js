@@ -1270,3 +1270,251 @@ test('merge-change: missing access, an unknown change, a closed change, and wron
   assert.equal(gh.run('merge-change', '--id', '30', '--approved', 'yes').status, 2);
   assert.equal(ghCalls(gh, 'merge').length, 0);
 });
+
+// --- Releases ---
+
+const EARLY = '2000-01-01T00:00:00Z';
+const LATE = '2100-01-01T00:00:00Z';
+
+// A repository with a feature, its task, and an epic above them, and merged
+// pull requests: #20 before any tag, and #21, which closes the task and the
+// feature, after it.
+function releaseRepo(state = {}) {
+  return fakeGitHub({
+    issues: [
+      { number: 1, title: 'Epic', labels: ['epic'] },
+      { number: 2, title: 'A player can zoom', labels: ['feature'], parent: 1, state: 'CLOSED' },
+      { number: 3, title: 'Add the zoom control', labels: ['task'], parent: 2, state: 'CLOSED' },
+      { number: 4, title: 'Fix the minimap', labels: ['bug'], state: 'CLOSED' },
+    ],
+    pulls: [
+      { number: 20, state: 'MERGED', head: 'old', title: 'Fix the minimap', labels: ['bug'], mergedAt: EARLY, closes: [4] },
+      { number: 21, state: 'MERGED', head: '2-zoom', title: 'Zoom the map', mergedAt: LATE, closes: [2, 3] },
+      { number: 22, state: 'OPEN', head: 'wip', title: 'Not merged yet', closes: [] },
+      { number: 23, state: 'MERGED', head: 'side', base: 'release-1', title: 'Into another branch', mergedAt: LATE, closes: [] },
+    ],
+    ...state,
+  });
+}
+
+function setState(gh, change) {
+  const st = gh.state();
+  change(st);
+  fs.writeFileSync(gh.env.FAKE_GH_STATE, JSON.stringify(st));
+}
+
+test('list-changes: with no tags at all, every change merged into main is listed', () => {
+  const gh = releaseRepo();
+  const { status, json } = gh.run('list-changes');
+  assert.equal(status, 0, JSON.stringify(json));
+  assert.equal(json.since, null);
+  assert.deepEqual(json.tags, { local: null, remote: null, match: true });
+  assert.deepEqual(json.changes.map((c) => c.id), ['20', '21'], 'oldest first, merged into main only');
+  assert.deepEqual(json.changes[0].labels, ['bug']);
+  assert.deepEqual(json.changes[1].closes, ['2', '3']);
+});
+
+test('list-changes: from the latest tag, only later changes, with the items they closed and their parents', () => {
+  const gh = releaseRepo();
+  gh.git('tag', 'v0.1.0');
+  gh.git('tag', 'v0.2.0');
+  gh.git('tag', 'not-a-version');
+  gh.git('push', '-q', 'origin', '--tags');
+  const { status, json } = gh.run('list-changes');
+  assert.equal(status, 0, JSON.stringify(json));
+  const head = gh.git('rev-parse', 'HEAD').trim();
+  assert.equal(json.since.tag, 'v0.2.0', 'the highest SemVer tag, ignoring others');
+  assert.equal(json.since.commit, head);
+  assert.match(json.since.at, /^\d{4}-\d\d-\d\dT/);
+  assert.equal(json.since.release, null);
+  assert.equal(json.tags.match, true);
+  assert.deepEqual(json.changes.map((c) => c.id), ['21']);
+  assert.deepEqual(json.items, [
+    { id: '2', url: 'https://github.com/octo/repo/issues/2', title: 'A player can zoom', kind: 'feature', state: 'closed', parent: '1' },
+    { id: '3', url: 'https://github.com/octo/repo/issues/3', title: 'Add the zoom control', kind: 'task', state: 'closed', parent: '2' },
+  ]);
+  const search = gh.state().calls.find((c) => c[0] === 'pr' && c[1] === 'list');
+  assert.ok(search.includes(`merged:>${json.since.at}`), 'GitHub filters by merge time');
+});
+
+test('list-changes: a tag with a release links it, and --merged-since starts from an older tag', () => {
+  const gh = releaseRepo({ releases: [{ tag: 'v0.1.0' }] });
+  gh.git('tag', '-a', 'v0.1.0', '-m', 'v0.1.0');
+  gh.commit('b.txt', 'b', 'Second');
+  gh.git('push', '-q', 'origin', 'main', '--tags');
+  gh.git('tag', 'v0.2.0');
+  gh.git('push', '-q', 'origin', 'v0.2.0');
+
+  const json = gh.run('list-changes', '--merged-since', 'v0.1.0').json;
+  assert.equal(json.since.tag, 'v0.1.0');
+  assert.equal(json.since.commit, gh.git('rev-parse', 'HEAD~1').trim(), 'an annotated tag reports its commit');
+  assert.equal(json.since.release, 'https://github.com/octo/repo/releases/tag/v0.1.0');
+  assert.equal(json.tags.remote.tag, 'v0.2.0');
+});
+
+test('list-changes: tags that differ here and on GitHub are reported, not fixed', () => {
+  const gh = releaseRepo();
+  gh.git('tag', 'v0.1.0');
+  gh.git('push', '-q', 'origin', 'v0.1.0');
+  gh.git('tag', 'v0.2.0');
+  const json = gh.run('list-changes').json;
+  assert.deepEqual(json.tags.local, { tag: 'v0.2.0', commit: gh.git('rev-parse', 'HEAD').trim() });
+  assert.equal(json.tags.remote.tag, 'v0.1.0');
+  assert.equal(json.tags.match, false);
+  assert.equal(json.since.tag, 'v0.1.0', 'starts from the tag on GitHub');
+  assert.ok(!gh.gitCalls().some((l) => /^(push|fetch)/.test(l)), 'nothing is pushed or fetched');
+});
+
+test('list-changes: a local main behind GitHub, and main\'s checks', () => {
+  const gh = releaseRepo();
+  const other = gh.other();
+  fs.writeFileSync(path.join(other.cwd, 'c.txt'), 'c');
+  other.git('add', 'c.txt');
+  other.git('commit', '-q', '-m', 'Someone else merged');
+  other.git('push', '-q', 'origin', 'main');
+  const remote = other.git('rev-parse', 'HEAD').trim();
+  setState(gh, (st) => {
+    st.checkRuns = { [remote]: [{ name: 'validate', status: 'completed', conclusion: 'failure' }, { name: 'lint', status: 'completed', conclusion: 'success' }] };
+  });
+
+  const json = gh.run('list-changes').json;
+  assert.equal(json.main.local, gh.git('rev-parse', 'HEAD').trim());
+  assert.equal(json.main.remote, remote);
+  assert.equal(json.main.match, false);
+  assert.equal(json.main.checks.state, 'failed');
+  assert.deepEqual(json.main.checks.runs, [{ name: 'validate', state: 'failed' }, { name: 'lint', state: 'passed' }]);
+});
+
+test('list-changes: passing and missing checks, an unknown tag, and wrong usage', () => {
+  const gh = releaseRepo();
+  const head = gh.git('rev-parse', 'HEAD').trim();
+  let json = gh.run('list-changes').json;
+  assert.equal(json.main.match, true);
+  assert.equal(json.main.checks.state, 'none');
+  setState(gh, (st) => { st.checkRuns = { [head]: [{ name: 'validate', status: 'completed', conclusion: 'success' }] }; });
+  assert.equal(gh.run('list-changes').json.main.checks.state, 'passed');
+  setState(gh, (st) => { st.checkRuns = { [head]: [{ name: 'validate', status: 'in_progress', conclusion: null }] }; });
+  assert.equal(gh.run('list-changes').json.main.checks.state, 'pending');
+
+  json = gh.run('list-changes', '--merged-since', 'v9.9.9').json;
+  assert.equal(json.code, 'TARGET_UNAVAILABLE');
+  assert.match(json.message, /v9\.9\.9 is not on origin/);
+  assert.equal(gh.run('list-changes', '--merged-since').status, 2);
+  assert.equal(gh.run('list-changes', 'v1').status, 2);
+});
+
+// A repository ready to release: main matches GitHub, and its checks passed.
+function readyToRelease(state = {}) {
+  const gh = releaseRepo(state);
+  const head = gh.git('rev-parse', 'HEAD').trim();
+  setState(gh, (st) => { st.checkRuns = { [head]: [{ name: 'validate', status: 'completed', conclusion: 'success' }] }; });
+  const notes = gh.draft('notes.md', 'Zooming the map ships in this release.\n');
+  return { gh, head, notes };
+}
+
+const releaseCalls = (gh, cmd) => gh.state().calls.filter((c) => c[0] === 'release' && c[1] === cmd);
+const originTags = (gh) => gh.originGit('tag', '--list').split('\n').filter(Boolean);
+
+test('publish-release: without --approved, nothing is released and gh is not called', () => {
+  const { gh, head, notes } = readyToRelease();
+  const { status, json } = gh.run('publish-release', '--tag', 'v0.1.0', '--target', head, '--file', notes);
+  assert.equal(status, 1);
+  assert.equal(json.code, 'NOT_APPROVED');
+  assert.equal(gh.state().calls.length, 0);
+});
+
+test('publish-release: an approved release tags the main commit on GitHub, with the notes', () => {
+  const { gh, head, notes } = readyToRelease();
+  const { status, json } = gh.run('publish-release', '--tag', 'v0.1.0', '--target', head, '--file', notes, '--approved');
+  assert.equal(status, 0, JSON.stringify(json));
+  assert.deepEqual(json.release, { tag: 'v0.1.0', url: 'https://github.com/octo/repo/releases/tag/v0.1.0', draft: false });
+  assert.equal(json.created, true);
+  assert.equal(json.checks.state, 'passed');
+  assert.deepEqual(releaseCalls(gh, 'create')[0], ['release', 'create', 'v0.1.0', '--repo', 'octo/repo', '--target', head, '--title', 'v0.1.0', '--notes-file', '-']);
+  assert.equal(gh.state().releases[0].notes, 'Zooming the map ships in this release.\n');
+  assert.deepEqual(originTags(gh), ['v0.1.0']);
+  assert.equal(gh.originGit('rev-parse', 'v0.1.0^{commit}').trim(), head);
+});
+
+test('publish-release: a draft makes no tag, and a second run changes nothing', () => {
+  const { gh, head, notes } = readyToRelease();
+  const first = gh.run('publish-release', '--tag', 'v0.1.0', '--target', head, '--file', notes, '--approved', '--draft').json;
+  assert.equal(first.release.draft, true);
+  assert.ok(releaseCalls(gh, 'create')[0].includes('--draft'));
+  assert.deepEqual(originTags(gh), [], 'a draft makes no tag');
+
+  const again = gh.run('publish-release', '--tag', 'v0.1.0', '--target', head, '--file', notes, '--approved', '--draft');
+  assert.equal(again.status, 0, JSON.stringify(again.json));
+  assert.equal(again.json.created, false);
+  assert.equal(releaseCalls(gh, 'create').length, 1);
+
+  const publish = gh.run('publish-release', '--tag', 'v0.1.0', '--target', head, '--file', notes, '--approved').json;
+  assert.equal(publish.code, 'TAG_EXISTS', 'the draft is not silently published or replaced');
+  assert.match(publish.message, /already has a draft release/);
+});
+
+test('publish-release: a published release run again succeeds and creates nothing', () => {
+  const { gh, head, notes } = readyToRelease();
+  gh.run('publish-release', '--tag', 'v0.1.0', '--target', head, '--file', notes, '--approved');
+  const again = gh.run('publish-release', '--tag', 'v0.1.0', '--target', head, '--file', notes, '--approved');
+  assert.equal(again.status, 0);
+  assert.equal(again.json.created, false);
+  assert.equal(releaseCalls(gh, 'create').length, 1);
+});
+
+test('publish-release: an existing tag here or on GitHub is refused and never moved', () => {
+  const local = readyToRelease();
+  local.gh.git('tag', 'v0.1.0', 'HEAD');
+  const here = local.gh.run('publish-release', '--tag', 'v0.1.0', '--target', local.head, '--file', local.notes, '--approved').json;
+  assert.equal(here.code, 'TAG_EXISTS');
+  assert.match(here.message, /in this clone/);
+
+  const remote = readyToRelease();
+  remote.gh.originGit('tag', 'v0.1.0', remote.head);
+  const there = remote.gh.run('publish-release', '--tag', 'v0.1.0', '--target', remote.head, '--file', remote.notes, '--approved').json;
+  assert.equal(there.code, 'TAG_EXISTS');
+  assert.match(there.message, /on origin/);
+  for (const { gh } of [local, remote]) assert.equal(releaseCalls(gh, 'create').length, 0);
+  assert.ok(!local.gh.gitCalls().concat(remote.gh.gitCalls()).some((l) => /^(tag (?!--list)|push)/.test(l)), 'no tag is made, moved, or pushed');
+});
+
+test('publish-release: a target that is not main, or a clone whose main differs, is refused', () => {
+  const { gh, head, notes } = readyToRelease();
+  gh.commit('local.txt', 'x', 'Not pushed');
+  const ahead = gh.git('rev-parse', 'HEAD').trim();
+  const notMain = gh.run('publish-release', '--tag', 'v0.1.0', '--target', ahead, '--file', notes, '--approved').json;
+  assert.equal(notMain.code, 'MAIN_MISMATCH');
+  assert.match(notMain.message, /is not the latest commit on main/);
+
+  const differs = gh.run('publish-release', '--tag', 'v0.1.0', '--target', head, '--file', notes, '--approved').json;
+  assert.equal(differs.code, 'MAIN_MISMATCH');
+  assert.match(differs.message, /This clone's main/);
+  assert.equal(releaseCalls(gh, 'create').length, 0);
+});
+
+test('publish-release: failing or unfinished checks are refused, and no checks at all are allowed', () => {
+  for (const [status, conclusion] of [['completed', 'failure'], ['queued', null]]) {
+    const { gh, head, notes } = readyToRelease();
+    setState(gh, (st) => { st.checkRuns = { [head]: [{ name: 'validate', status, conclusion }] }; });
+    const json = gh.run('publish-release', '--tag', 'v0.1.0', '--target', head, '--file', notes, '--approved').json;
+    assert.equal(json.code, 'CHECKS_FAILING');
+    assert.match(json.message, /validate \((failed|pending)\)/);
+    assert.equal(releaseCalls(gh, 'create').length, 0);
+  }
+  const { gh, head, notes } = readyToRelease();
+  setState(gh, (st) => { st.checkRuns = {}; });
+  const none = gh.run('publish-release', '--tag', 'v0.1.0', '--target', head, '--file', notes, '--approved').json;
+  assert.equal(none.created, true);
+  assert.equal(none.checks.state, 'none');
+});
+
+test('publish-release: missing access, empty notes, and wrong usage release nothing', () => {
+  const { gh, head, notes } = readyToRelease({ permission: 'TRIAGE' });
+  assert.equal(gh.run('publish-release', '--tag', 'v0.1.0', '--target', head, '--file', notes, '--approved').json.code, 'MISSING_PERMISSION');
+  const empty = gh.draft('empty.md', '  \n');
+  assert.equal(gh.run('publish-release', '--tag', 'v0.1.0', '--target', head, '--file', empty, '--approved').json.code, 'INVALID_DRAFT');
+  assert.equal(gh.run('publish-release', '--tag', 'release-1', '--target', head, '--file', notes, '--approved').status, 2);
+  assert.equal(gh.run('publish-release', '--tag', 'v0.1.0', '--target', 'main', '--file', notes, '--approved').status, 2);
+  assert.equal(gh.run('publish-release', '--tag', 'v0.1.0', '--target', head, '--approved').status, 2);
+  assert.equal(releaseCalls(gh, 'create').length, 0);
+});

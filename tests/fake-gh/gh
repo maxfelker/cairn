@@ -19,6 +19,11 @@
 //              comments: [{id, author, body}] on the conversation, reviews: [{id, author, state, body}],
 //              blockedBy: the message GitHub gives when a rule blocks the merge}],
 //     mergeMethods: {merge, squash, rebase} (all true by default),
+//     pulls also take base (default main), labels: [name], mergedAt (set on merge),
+//     checkRuns: {"<commit sha>": [{name, status, conclusion}]} for the commit check-runs API,
+//     releases: [{tag, target, title, notes, draft}],
+// Commits and tags are read from the bare repository in FAKE_GH_ORIGIN,
+// which stands in for GitHub's copy of the repository.
 //
 // With the full+json media type (`-H 'Accept: application/vnd.github.full+json'`),
 // REST results add `body_html`, and GraphQL gives `bodyHTML`, as GitHub does.
@@ -166,6 +171,13 @@ function renderHtml(body) {
 const timeOf = (c) => c.at || new Date(Date.UTC(2026, 0, 1) + Number(c.id) * 60000).toISOString();
 
 const pullUrl = (n) => `https://github.com/${state.repo}/pull/${n}`;
+const releaseUrl = (tag) => `https://github.com/${state.repo}/releases/tag/${tag}`;
+
+// git in the bare repository that stands in for GitHub's copy.
+function originGit(...args) {
+  if (!process.env.FAKE_GH_ORIGIN) done('', 64, 'fake gh: FAKE_GH_ORIGIN is not set\n');
+  return execFileSync('git', ['--git-dir', process.env.FAKE_GH_ORIGIN, ...args], { encoding: 'utf8', stdio: ['ignore', 'pipe', 'pipe'] });
+}
 
 function git(...args) {
   return execFileSync('git', args, { encoding: 'utf8', stdio: ['ignore', 'pipe', 'pipe'] });
@@ -289,6 +301,42 @@ if (group === 'issue' && cmd === 'develop') {
   done(`github.com/${state.repo}/tree/${name}\n`);
 }
 
+if (group === 'release') {
+  if (!['view', 'create'].includes(cmd)) unsupported('command');
+  const opts = parsePairs(rest_, ['--draft']);
+  for (const never of ['generate-notes', 'latest', 'verify-tag']) {
+    if (rest_.includes(`--${never}`)) unsupported(`flag --${never}`);
+  }
+  requireLogin();
+  requireRepo(opts.repo);
+  state.releases = state.releases || [];
+  const tag = opts._[0];
+
+  if (cmd === 'view') {
+    const release = state.releases.find((r) => r.tag === tag);
+    if (!release) done('', 1, 'release not found\n');
+    const view = { tagName: release.tag, url: releaseUrl(release.tag), isDraft: !!release.draft };
+    json(Object.fromEntries(opts.json.split(',').map((f) => [f, view[f]])));
+  }
+
+  if (cmd === 'create') {
+    if (!atLeast('WRITE')) done('', 1, 'HTTP 403: Resource not accessible by integration\n');
+    if (state.releases.some((r) => r.tag === tag)) done('', 1, 'HTTP 422: Validation Failed (tag_name already_exists)\n');
+    if (opts['notes-file'] !== '-') unsupported('notes not from stdin');
+    const release = { tag, target: opts.target, title: opts.title, notes: fs.readFileSync(0, 'utf8'), draft: !!opts.draft };
+    // GitHub makes the tag when the release is published, not for a draft.
+    if (!release.draft) {
+      try {
+        originGit('tag', tag, opts.target);
+      } catch {
+        done('', 1, `HTTP 422: Validation Failed (target_commitish invalid)\n`);
+      }
+    }
+    state.releases.push(release);
+    done(`${releaseUrl(tag)}\n`);
+  }
+}
+
 if (group === 'pr') {
   if (!['list', 'create', 'edit', 'view', 'merge'].includes(cmd)) unsupported('command');
   const opts = parsePairs(rest_, ['--merge', '--squash', '--rebase']);
@@ -305,8 +353,29 @@ if (group === 'pr') {
 
   if (cmd === 'list') {
     const want = (opts.state || 'open').toUpperCase();
-    const view = (p) => ({ number: p.number, url: pullUrl(p.number) });
-    json(state.pulls.filter((p) => p.head === opts.head && p.state === want).map((p) => Object.fromEntries(opts.json.split(',').map((f) => [f, view(p)[f]]))));
+    const view = (p) => ({
+      number: p.number,
+      url: pullUrl(p.number),
+      title: p.title,
+      labels: (p.labels || []).map((name) => ({ name })),
+      mergedAt: p.mergedAt || null,
+      closingIssuesReferences: closesOf(p).map((number) => ({ number })),
+    });
+    // gh's search qualifier `merged:>TIME`, the only one Cairn uses.
+    let after = null;
+    if (opts.search !== undefined) {
+      const m = /^merged:>(\S+)$/.exec(opts.search);
+      if (!m) unsupported(`pr list search ${opts.search}`);
+      after = m[1];
+    }
+    const pulls = state.pulls
+      .filter((p) => p.state === want)
+      .filter((p) => opts.head === undefined || p.head === opts.head)
+      .filter((p) => opts.base === undefined || (p.base || 'main') === opts.base)
+      .filter((p) => !after || (p.mergedAt && p.mergedAt > after))
+      .sort((a, b) => b.number - a.number)
+      .slice(0, opts.limit ? Number(opts.limit) : 30);
+    json(pulls.map((p) => Object.fromEntries(opts.json.split(',').map((f) => [f, view(p)[f]]))));
   }
 
   if (cmd === 'create') {
@@ -356,6 +425,7 @@ if (group === 'pr') {
     pull.state = 'MERGED';
     pull.mergedWith = method[0];
     pull.mergeCommit = 'c0ffee0000000000000000000000000000000000';
+    pull.mergedAt = new Date().toISOString();
     for (const n of closesOf(pull)) {
       const issue = state.issues.find((i) => i.number === n);
       if (issue) issue.state = 'CLOSED';
@@ -433,9 +503,38 @@ if (group === 'api') {
     unsupported('graphql query');
   }
 
+  const page = (items) => json(opts.paginate && opts.slurp ? [items] : items);
   const [pathPart, queryPart = ''] = opts.path.split('?');
   const query = Object.fromEntries(new URLSearchParams(queryPart));
   const restComment = (issue, c) => ({ ...(opts.full ? { body_html: renderHtml(c.body) } : {}), id: c.id, body: c.body, user: { login: c.author }, html_url: `https://github.com/${state.repo}/issues/${issue.number}#issuecomment-${c.id}`, created_at: timeOf(c) });
+
+  // A commit, its check runs, and a release by tag, read from the bare
+  // repository that stands in for GitHub.
+  const commitPath = /^repos\/([^/]+\/[^/]+)\/commits\/([^/]+)(\/check-runs)?$/.exec(pathPart);
+  if (commitPath && opts.method === 'GET') {
+    requireRepo(commitPath[1]);
+    let sha;
+    let date;
+    try {
+      [sha, date] = originGit('log', '-1', '--format=%H%n%cI', `${decodeURIComponent(commitPath[2])}^{commit}`).trim().split('\n');
+    } catch {
+      httpError(422, `No commit found for SHA: ${commitPath[2]}`);
+    }
+    if (commitPath[3]) {
+      const runs = (state.checkRuns || {})[sha] || [];
+      page({ total_count: runs.length, check_runs: runs });
+    }
+    json({ sha, commit: { committer: { date: new Date(date).toISOString().replace('.000', '') } } });
+  }
+
+  const releaseTag = /^repos\/([^/]+\/[^/]+)\/releases\/tags\/(.+)$/.exec(pathPart);
+  if (releaseTag && opts.method === 'GET') {
+    requireRepo(releaseTag[1]);
+    const tag = decodeURIComponent(releaseTag[2]);
+    const release = (state.releases || []).find((r) => r.tag === tag && !r.draft);
+    if (!release) httpError(404, 'Not Found');
+    json({ tag_name: release.tag, html_url: releaseUrl(release.tag), draft: false });
+  }
 
   const compare = /^repos\/([^/]+\/[^/]+)\/compare\/([^.]+)\.\.\.(.+)$/.exec(pathPart);
   if (compare && opts.method === 'GET') {
@@ -461,7 +560,6 @@ if (group === 'api') {
   if (!m) unsupported(`api path ${opts.path}`);
   const [, repo, number, sub] = m;
   requireRepo(repo);
-  const page = (items) => json(opts.paginate && opts.slurp ? [items] : items);
 
   if (!number && opts.method === 'GET') {
     const wantState = (query.state || 'open').toUpperCase();

@@ -26,12 +26,15 @@ const CODES = [
   'INSIDE_REPO',
   'NOT_APPROVED',
   'PROTECTED',
+  'TAG_EXISTS',
+  'MAIN_MISMATCH',
+  'CHECKS_FAILING',
   'PROVIDER_ERROR',
 ];
 
-const ACTIONS = ['comment', 'create-item', 'label', 'link-child', 'push', 'propose-change', 'merge'];
+const ACTIONS = ['comment', 'create-item', 'label', 'link-child', 'push', 'propose-change', 'merge', 'release'];
 
-const COMMANDS = ['target', 'auth', 'access', 'check', 'comment', 'find-item', 'get-item', 'list-items', 'order-children', 'save-item', 'start-change', 'push-change', 'save-change', 'get-change', 'get-image', 'reply', 'merge-change'];
+const COMMANDS = ['target', 'auth', 'access', 'check', 'comment', 'find-item', 'get-item', 'list-items', 'order-children', 'save-item', 'start-change', 'push-change', 'save-change', 'get-change', 'get-image', 'reply', 'merge-change', 'list-changes', 'publish-release'];
 
 const KINDS = ['epic', 'feature', 'task', 'bug'];
 

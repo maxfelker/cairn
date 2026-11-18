@@ -65,6 +65,7 @@ function fakeGitHub(state = {}) {
     ...process.env,
     PATH: [FAKE_GH_DIR, bin, process.env.PATH].join(path.delimiter),
     FAKE_GH_STATE: stateFile,
+    FAKE_GH_ORIGIN: origin,
     // The mock answers at once, so do not wait between reads of closing links.
     CAIRN_LINK_WAIT_MS: '0',
   };
@@ -101,6 +102,10 @@ function fakeGitHub(state = {}) {
       fs.writeFileSync(path.join(cwd, name), text);
       git('add', name);
       git('commit', '-q', '-m', message);
+    },
+    // Run git in the bare repository that stands in for GitHub.
+    originGit(...args) {
+      return execFileSync(REAL_GIT, ['--git-dir', origin, ...args], { encoding: 'utf8', stdio: ['ignore', 'pipe', 'pipe'] });
     },
     // A second clone of the same origin, as another person's machine.
     // Returns its git runner and directory.

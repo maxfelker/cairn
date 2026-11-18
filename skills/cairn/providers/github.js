@@ -103,6 +103,7 @@ const ACTIONS = {
   push: { level: 'WRITE', doing: 'pushing a branch' },
   'propose-change': { level: 'WRITE', doing: 'opening a pull request' },
   merge: { level: 'WRITE', doing: 'merging a pull request' },
+  release: { level: 'WRITE', doing: 'publishing a release' },
 };
 
 function rank(level) {
@@ -1009,6 +1010,226 @@ function mergeChangeArgs(args) {
   return mergeChange({ id: f.id, approved });
 }
 
+// --- Releases: a version tag on main, and the release that describes it ---
+
+const SEMVER_TAG = /^v?(0|[1-9]\d*)\.(0|[1-9]\d*)\.(0|[1-9]\d*)$/;
+
+// The highest SemVer tag among `names`, or null. Other tags are ignored.
+function latestTag(names) {
+  const parts = (n) => SEMVER_TAG.exec(n).slice(1).map(Number);
+  return names.filter((n) => SEMVER_TAG.test(n)).reduce((best, n) => {
+    if (!best) return n;
+    const [a, b] = [parts(n), parts(best)];
+    const diff = a.map((x, i) => x - b[i]).find((d) => d !== 0) || 0;
+    return diff > 0 ? n : best;
+  }, null);
+}
+
+// The tags on the remote, each with the commit it points to. An annotated
+// tag is listed twice, the second time peeled (`^{}`) to its commit.
+function remoteTags(ctx, remote) {
+  const r = git(ctx, ['ls-remote', '--tags', remote]);
+  if (!r.ok) return { ok: false, r };
+  const tags = new Map();
+  for (const line of r.stdout.split('\n').filter(Boolean)) {
+    const [sha, ref] = line.split(/\s+/);
+    const name = ref.replace(/^refs\/tags\//, '');
+    if (name.endsWith('^{}')) tags.set(name.slice(0, -3), sha);
+    else if (!tags.has(name)) tags.set(name, sha);
+  }
+  return { ok: true, tags };
+}
+
+// The latest version tag here and on the provider, whether they agree, and
+// where `main` stands here and on the provider. Reads only: a difference is
+// reported, never fixed by fetching or pushing.
+function releaseBase(ctx, t) {
+  const localList = git(ctx, ['tag', '--list']);
+  if (!localList.ok) return { ok: false, result: gitFailed('list the tags in this clone', localList) };
+  const remote = remoteTags(ctx, t.remote);
+  if (!remote.ok) return { ok: false, result: gitFailed(`list the tags on ${t.remote}`, remote.r) };
+
+  const localName = latestTag(localList.stdout.split('\n').map((s) => s.trim()).filter(Boolean));
+  const remoteName = latestTag([...remote.tags.keys()]);
+  const localCommit = localName ? git(ctx, ['rev-parse', `${localName}^{commit}`]).stdout.trim() : null;
+  const remoteCommit = remoteName ? remote.tags.get(remoteName) : null;
+  const tags = {
+    local: localName ? { tag: localName, commit: localCommit } : null,
+    remote: remoteName ? { tag: remoteName, commit: remoteCommit } : null,
+    match: localName === remoteName && localCommit === remoteCommit,
+  };
+
+  const local = git(ctx, ['rev-parse', '--verify', '--quiet', `refs/heads/${BASE}`]);
+  const head = remoteHead(ctx, t.remote, BASE);
+  if (!head.ok) return { ok: false, result: gitFailed(`read ${BASE} on ${t.remote}`, head.r) };
+  return {
+    ok: true,
+    tags,
+    remoteTags: remote.tags,
+    main: { local: local.ok ? local.stdout.trim() : null, remote: head.sha, match: local.ok && local.stdout.trim() === head.sha },
+  };
+}
+
+// The checks on one commit, in the contract's words.
+function commitChecks(ctx, repo, sha) {
+  const res = apiList(ctx, `repos/${repo}/commits/${sha}/check-runs?per_page=100`);
+  if (!res.ok) return res;
+  const runs = res.data.flatMap((page) => page.check_runs || []);
+  return { ok: true, data: checksOf(runs.map((c) => ({ name: c.name, status: String(c.status).toUpperCase(), conclusion: c.conclusion ? String(c.conclusion).toUpperCase() : null }))) };
+}
+
+const notFoundHttp = (res) => res.r && /\(HTTP 404\)|Not Found/.test(`${res.r.stderr}${res.r.stdout}`);
+
+// What a release would contain, and whether main is ready to tag: the
+// latest version tag (compared here and on GitHub), the pull requests
+// merged into main since it, the issues they closed, and main's checks.
+function listChanges({ exec = run, cwd, since } = {}) {
+  const t = target({ exec, cwd });
+  if (!t.ok) return t;
+  const repo = t.target;
+  const ctx = { exec, cwd };
+
+  const base = releaseBase(ctx, t);
+  if (!base.ok) return base.result;
+
+  let checks = { state: 'none', runs: [] };
+  if (base.main.remote) {
+    const c = commitChecks(ctx, repo, base.main.remote);
+    if (!c.ok) return failed(c, `reading the checks on ${BASE}`);
+    checks = c.data;
+  }
+
+  // The tag the release starts from: the one asked for, or the latest on
+  // GitHub. Another person's machine may have tags this clone lacks.
+  const tag = since || (base.tags.remote && base.tags.remote.tag);
+  let from = null;
+  if (tag) {
+    const commit = base.remoteTags.get(tag);
+    if (!commit) {
+      return fail('TARGET_UNAVAILABLE', `The tag ${tag} is not on ${t.remote}.`, `Name a tag that is on ${repo}, or push ${tag} first.`);
+    }
+    const c = api(ctx, [`repos/${repo}/commits/${commit}`]);
+    if (!c.ok) return failed(c, `reading the commit tagged ${tag}`);
+    const rel = api(ctx, [`repos/${repo}/releases/tags/${encodeURIComponent(tag)}`]);
+    if (!rel.ok && !notFoundHttp(rel)) return failed(rel, `reading the release for ${tag}`);
+    from = { tag, commit, at: c.data.commit.committer.date, release: rel.ok ? rel.data.html_url : null };
+  }
+
+  const args = ['pr', 'list', '--repo', repo, '--state', 'merged', '--base', BASE, '--limit', '1000', '--json', 'number,url,title,labels,mergedAt,closingIssuesReferences'];
+  if (from) args.push('--search', `merged:>${from.at}`);
+  const listed = exec('gh', args, { cwd });
+  if (!listed.ok) return ghFailed(listed, `listing the pull requests merged into ${BASE}`);
+  const changes = JSON.parse(listed.stdout)
+    .filter((p) => !from || p.mergedAt > from.at)
+    .sort((a, b) => (a.mergedAt < b.mergedAt ? -1 : a.mergedAt > b.mergedAt ? 1 : a.number - b.number))
+    .map((p) => ({
+      id: String(p.number),
+      url: p.url,
+      title: p.title,
+      labels: (p.labels || []).map((l) => l.name),
+      merged: p.mergedAt,
+      closes: (p.closingIssuesReferences || []).map((i) => String(i.number)),
+    }));
+
+  // The issues those changes closed, with their parents, so the notes can
+  // group them by feature and epic.
+  const ids = [...new Set(changes.flatMap((c) => c.closes))].sort((a, b) => a - b);
+  const items = [];
+  for (const id of ids) {
+    const issue = api(ctx, [`repos/${repo}/issues/${id}`]);
+    if (!issue.ok) return failed(issue, `reading #${id}`);
+    const parent = api(ctx, [`repos/${repo}/issues/${id}/parent`]);
+    if (!parent.ok && !notFoundHttp(parent)) return failed(parent, `reading the parent of #${id}`);
+    const i = issue.data;
+    items.push({ ...toItem(i), kind: kindOf(i), state: i.state, parent: parent.ok ? String(parent.data.number) : null });
+  }
+
+  return { ok: true, provider: PROVIDER, since: from, tags: base.tags, main: { ...base.main, checks }, changes, items };
+}
+
+// The release for a tag, published or draft, or null when there is none.
+// `gh release view` finds drafts too, which the REST tag lookup does not.
+function releaseFor(ctx, repo, tag) {
+  const r = ctx.exec('gh', ['release', 'view', tag, '--repo', repo, '--json', 'tagName,url,isDraft'], { cwd: ctx.cwd });
+  if (r.ok) {
+    const rel = JSON.parse(r.stdout);
+    return { ok: true, release: { tag: rel.tagName, url: rel.url, draft: rel.isDraft } };
+  }
+  if (/release not found/i.test(`${r.stderr}${r.stdout}`)) return { ok: true, release: null };
+  return { ok: false, result: ghFailed(r, `reading the release for ${tag}`) };
+}
+
+// Tag `main` and publish its release, only with the developer's approval,
+// and only on GitHub's `main` head when this clone's `main` matches it and
+// its checks passed. A tag that already exists is refused, never moved,
+// reused, or deleted. Publishing a tag that already has its release again
+// does nothing, so a re-run is safe. With `draft`, GitHub makes no tag
+// until the draft is published, which is how the flow is tried safely.
+function publishRelease({ exec = run, cwd, tag, commit, file, approved = false, draft = false } = {}) {
+  if (!approved) {
+    return fail('NOT_APPROVED', `${tag} was not released, because the release was not approved.`, 'Show the developer the version and notes, and run publish-release again with --approved after they say yes.');
+  }
+  const notes = readBody(file);
+  if (!notes.ok) return notes;
+  const t = target({ exec, cwd });
+  if (!t.ok) return t;
+  const repo = t.target;
+  const ctx = { exec, cwd };
+
+  const a = access({ exec, cwd, repo, action: 'release' });
+  if (!a.ok) return a;
+
+  const existing = releaseFor(ctx, repo, tag);
+  if (!existing.ok) return existing.result;
+  if (existing.release) {
+    if (existing.release.draft !== draft) {
+      const what = existing.release.draft ? 'a draft release' : 'a published release';
+      return fail('TAG_EXISTS', `${tag} already has ${what}: ${existing.release.url}`, existing.release.draft ? `Delete the draft on GitHub if it should be published differently, then ask again.` : 'Choose the next version instead.');
+    }
+    return { ok: true, provider: PROVIDER, release: existing.release, created: false };
+  }
+
+  const base = releaseBase(ctx, t);
+  if (!base.ok) return base.result;
+  const local = git(ctx, ['rev-parse', '--verify', '--quiet', `refs/tags/${tag}`]);
+  if (local.ok || base.remoteTags.has(tag)) {
+    return fail('TAG_EXISTS', `The tag ${tag} already exists ${local.ok ? 'in this clone' : `on ${t.remote}`}. Cairn never moves or reuses a tag.`, 'Choose the next version, or delete the tag yourself if it was made by mistake.');
+  }
+  if (!base.main.remote || commit !== base.main.remote) {
+    return fail('MAIN_MISMATCH', `${commit} is not the latest commit on ${BASE} on ${t.remote}${base.main.remote ? ` (${base.main.remote})` : ''}.`, `Run list-changes again, and release the ${BASE} commit it reports.`);
+  }
+  if (!base.main.match) {
+    return fail('MAIN_MISMATCH', `This clone's ${BASE} (${base.main.local || 'missing'}) does not match ${BASE} on ${t.remote} (${base.main.remote}).`, `Update the clone's ${BASE} with git pull while on ${BASE}, check the result, then ask again.`);
+  }
+  const checks = commitChecks(ctx, repo, commit);
+  if (!checks.ok) return failed(checks, `reading the checks on ${commit}`);
+  if (!['passed', 'none'].includes(checks.data.state)) {
+    const names = checks.data.runs.filter((r) => r.state !== 'passed').map((r) => `${r.name} (${r.state})`).join(', ');
+    return fail('CHECKS_FAILING', `The checks on ${BASE} have not all passed: ${names}.`, `Fix ${BASE}, or wait for its checks to finish, then ask again.`);
+  }
+
+  const args = ['release', 'create', tag, '--repo', repo, '--target', commit, '--title', tag, '--notes-file', '-'];
+  if (draft) args.push('--draft');
+  const made = exec('gh', args, { cwd, input: `${notes.text}\n` });
+  if (!made.ok) return ghFailed(made, `creating the release ${tag}`);
+  const after = releaseFor(ctx, repo, tag);
+  if (!after.ok) return after.result;
+  return { ok: true, provider: PROVIDER, release: after.release, created: true, checks: checks.data };
+}
+
+function publishReleaseArgs(args) {
+  const bare = ['--approved', '--draft'];
+  const f = flags(args.filter((x) => !bare.includes(x)), ['tag', 'target', 'file']);
+  if (!f || !SEMVER_TAG.test(f.tag || '') || !/^[0-9a-f]{40}$/.test(f.target || '') || !f.file) return null;
+  return publishRelease({ tag: f.tag, commit: f.target, file: f.file, approved: args.includes('--approved'), draft: args.includes('--draft') });
+}
+
+function listChangesArgs(args) {
+  const f = flags(args, ['merged-since']);
+  if (!f || (f['merged-since'] !== undefined && !f['merged-since'].trim())) return null;
+  return listChanges({ since: f['merged-since'] });
+}
+
 const THREAD_QUERY ='query($id: ID!) { node(id: $id) { ... on PullRequestReviewThread { id isResolved pullRequest { number repository { nameWithOwner } } comments(last: 1) { nodes { databaseId url body } } } } }';
 const REPLY_MUTATION = 'mutation($id: ID!, $body: String!) { addPullRequestReviewThreadReply(input: { pullRequestReviewThreadId: $id, body: $body }) { comment { databaseId url } } }';
 
@@ -1248,10 +1469,12 @@ const commands = {
   'get-image': getImageArgs,
   reply: replyArgs,
   'merge-change': mergeChangeArgs,
+  'list-changes': listChangesArgs,
+  'publish-release': publishReleaseArgs,
 };
 
 if (require.main === module) {
   process.exitCode = cli(commands, process.argv.slice(2));
 }
 
-module.exports = { name: PROVIDER, commands, marker, comment, actions: ACTIONS, kinds: KIND_LABELS, parseRemote, target, auth, access, check, findItem, getItem, listItems, orderChildren, saveItem, startChange, pushChange, saveChange, getChange, getImage, reply, mergeChange, imagesOf, isCairn, checksOf, withLinks };
+module.exports = { name: PROVIDER, commands, marker, comment, actions: ACTIONS, kinds: KIND_LABELS, parseRemote, target, auth, access, check, findItem, getItem, listItems, orderChildren, saveItem, startChange, pushChange, saveChange, getChange, getImage, reply, mergeChange, listChanges, publishRelease, latestTag, imagesOf, isCairn, checksOf, withLinks };
