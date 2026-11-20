@@ -10,44 +10,82 @@ Cairn currently runs in Claude Code and supports GitHub. You need `git`, Node.js
 
 ## Get started
 
-1. **Log in to GitHub.** Run `gh auth login`. Skip this if `gh auth status` says you are logged in.
-2. **Install Cairn.** In Claude Code, run:
+1. **Install Cairn.** In Claude Code, run:
 
    ```
    /plugin marketplace add maxfelker/cairn
    /plugin install cairn@cairn
    ```
 
-3. **Talk to Cairn.** Start a new session in a clone of a GitHub repository, and ask **"is Cairn set up?"**. Then say what you want, such as **"plan this idea: …"** or **"work on #42"**.
+2. **Log in to GitHub.** Run `gh auth login`. Skip this if `gh auth status` says you are logged in.
+3. **Check the setup.** Start a new session in a clone of a GitHub repository, and ask:
+
+   ```
+   Is Cairn set up?
+   ```
 
 There are no commands to learn. Cairn works out the next step from what you ask and from the state of the work on GitHub.
 
-## What you can ask
+## Walk through the lifecycle
 
-| Ask | Cairn |
-|---|---|
-| "plan this idea: …" | Writes it up as an epic, then breaks it into features and tasks |
-| "how should we build epic #1?" | Records one architecture for the epic's features |
-| "work on #42" | Takes the next step: break it down, build it on a branch, or continue the open pull request |
-| "address the feedback on #31" | Answers review comments in their threads, with commits on the same branch |
-| "is #31 ready?" | Gives one verdict against the criteria, and merges only when you say yes |
-| "prepare a release" | Proposes a version and notes from the merged work, and publishes only when you say yes |
+Copy each prompt into Claude Code, and swap in your own idea and numbers. Cairn asks before it merges or publishes anything.
+
+**Create an epic from what you share in the terminal.** Paste an idea, notes, or a transcript after the prompt.
+
+```
+Plan this idea: <paste your idea, notes, or transcript>
+```
+
+**Break the epic into features.** Each feature is one capability, such as "A player can move the camera with WASD".
+
+```
+Break down epic #1 into features
+```
+
+**Design the architecture across the features.** Cairn records one plan for shared work, interfaces, and build order, as a comment on the epic.
+
+```
+How should we build epic #1?
+```
+
+**Break a feature into technical tasks.** The tasks follow the architecture.
+
+```
+Break down feature #2 into tasks
+```
+
+**Build a feature and open a pull request.** Cairn builds the tasks on one branch, then opens a pull request for review.
+
+```
+Work on #2
+```
+
+**Review the pull request, and have Cairn make the changes.** Leave comments on the pull request in GitHub, then:
+
+```
+Address the feedback on #31
+```
+
+When the review is done, ask `Is #31 ready?`. Cairn merges only when you say yes.
+
+**Publish a versioned release.** Cairn proposes a semantic version and notes from the merged work, then tags it and publishes a GitHub release when you say yes.
+
+```
+Prepare a release
+```
 
 ## Manage the plugin
 
 | To | Run in Claude Code |
 |---|---|
 | Install | `/plugin marketplace add maxfelker/cairn`, then `/plugin install cairn@cairn` |
+| Install for a team | `claude plugin install cairn@cairn --scope project` in a shell in the repository, then commit `.claude/settings.json` |
 | Turn off for now | `/plugin disable cairn@cairn` |
 | Turn back on | `/plugin enable cairn@cairn` |
 | Update | `/plugin marketplace update cairn`, then `/plugin update cairn@cairn`, then restart Claude Code |
 | Uninstall | `/plugin uninstall cairn@cairn`, then `/plugin marketplace remove cairn` |
 
-Every command also works in a shell as `claude plugin …`, for example `claude plugin disable cairn@cairn`.
-
-**Install for a team.** Run `claude plugin install cairn@cairn --scope project` in the repository. It records Cairn in the repository's `.claude/settings.json`, so everyone who works there is offered Cairn. Commit that file.
-
-**Nothing is left behind.** Cairn keeps all of its state in GitHub, in issues, comments, pull requests, and releases. It writes no files of its own, so uninstalling leaves nothing to clean up. Claude Code marks its cached copy of the plugin as orphaned, and removes it on its own.
+Cairn keeps all of its state in GitHub, so uninstalling leaves nothing to clean up.
 
 ## Status
 
