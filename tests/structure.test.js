@@ -20,9 +20,11 @@ const GOOD = `# Players can trade resources between settlements
 
 Settlements run short of food while others hoard it, and players quit when they cannot fix that.
 
-## Who it is for
+## Personas
 
-Players who manage more than one settlement.
+| Persona | Jobs to be done |
+|---|---|
+| Players who manage more than one settlement. | Rescue a starving settlement, move resources between settlements |
 
 ## In scope
 
@@ -58,10 +60,37 @@ test('a well-formed epic passes', () => {
 test('headings match without regard to case or alternate names', () => {
   const text = GOOD
     .replace('## Why', '## WHY THIS MATTERS')
-    .replace('## Who it is for', '## who')
+    .replace('## Personas', '## personas')
     .replace('## Out of scope', '## Non-goals')
     .replace('## Acceptance Criteria', '## acceptance criteria');
   assert.equal(checkEpic(text).ok, true);
+});
+
+test('an epic written before the Personas table still passes', () => {
+  const legacy = GOOD.replace(/## Personas\n[\s\S]*?\n## In scope/, '## Who it is for\n\nPlayers who manage more than one settlement.\n\n## In scope');
+  assert.equal(checkEpic(legacy).ok, true);
+});
+
+test('personas must be a table of jobs to be done', () => {
+  const table = /\| Persona \|[\s\S]*?settlements \|/;
+  const cases = {
+    'Players who manage settlements.': /must be a table/,
+    '| Persona | Goal |\n|---|---|\n| Player | Trade |': /must be a table/,
+    '| Persona | Jobs to be done |\n|---|---|': /has no rows/,
+    '| Persona | Jobs to be done |\n|---|---|\n| Player | |': /needs a persona and its jobs/,
+  };
+  for (const [section, want] of Object.entries(cases)) {
+    assert.match(problemsFor(GOOD.replace(table, section)), want, section);
+  }
+  const mixedCase = GOOD.replace('| Persona | Jobs to be done |', '| persona | Jobs To Be Done |');
+  assert.equal(checkEpic(mixedCase).ok, true);
+});
+
+test('only the persona column decides who the users are', () => {
+  const text = GOOD
+    .replace('Rescue a starving settlement', 'Report bugs to developers')
+    .replace('- [ ] A player can see a caravan travel along the road', '- [ ] A developer can publish a mod');
+  assert.match(checkEpic(text).warnings[0], /mentions "developer"/);
 });
 
 test('a missing title is reported', () => {
@@ -69,7 +98,7 @@ test('a missing title is reported', () => {
 });
 
 test('each missing section is reported by name', () => {
-  for (const heading of ['Why', 'Who it is for', 'In scope', 'Out of scope', 'What success looks like', 'Acceptance Criteria']) {
+  for (const heading of ['Why', 'Personas', 'In scope', 'Out of scope', 'What success looks like', 'Acceptance Criteria']) {
     const without = GOOD.replace(new RegExp(`## ${heading}\\n`), '## Notes\n');
     assert.match(problemsFor(without), new RegExp(`Missing the "${heading}" section`), heading);
   }
@@ -93,9 +122,7 @@ test('criteria must be persona capabilities', () => {
   const cases = {
     '- [ ] Trade panel': /is not a capability/,
     '- [ ] Caravan system': /is not a capability/,
-    '- [ ] A developer can add a trade API': /"Who it is for" does not name developers/,
     '- [ ] Developers can configure routes': /is not a capability|not a persona/,
-    '- [ ] A trade system can balance prices': /names a system part/,
     '- [ ] A player can': /is not a capability/,
   };
   for (const [line, want] of Object.entries(cases)) {
@@ -111,8 +138,10 @@ test('a developer is a persona when the epic is for developers', () => {
   assert.equal(checkEpic(tool).ok, true);
   assert.equal(checkEpic(tool.replace('A developer can publish', 'A dev can publish')).ok, true, '"dev" too');
   const notForThem = GOOD.replace('- [ ] A player can see a caravan travel along the road', '- [ ] A developer can publish a mod to the workshop');
-  assert.match(problemsFor(notForThem), /"Who it is for" does not name developers/);
-  assert.match(problemsFor(tool.replace('- [ ] A player can open a trade panel between two settlements', '- [ ] A trade system can balance prices')), /names a system part/, 'system parts are still not personas');
+  const warned = checkEpic(notForThem);
+  assert.equal(warned.ok, true, 'a warning never blocks');
+  assert.match(warned.warnings[0], /mentions "developer"/);
+  assert.equal(checkEpic(tool).warnings, undefined, 'no warning when developers are the users');
 });
 
 test('every problem is reported, not just the first', () => {
@@ -183,8 +212,6 @@ test('feature: a well-formed feature passes', () => {
 test('feature: the title must be one persona capability', () => {
   const cases = {
     'Camera movement': /is not a capability/,
-    'A developer can wire up input': /"Who it is for" does not name developers/,
-    'A camera system can pan': /names a system part/,
     'A player can move and zoom the camera': /more than one capability/,
     'A player can pan or rotate the camera': /more than one capability/,
   };
@@ -193,19 +220,38 @@ test('feature: the title must be one persona capability', () => {
   }
 });
 
+test('feature: wording for builders warns but never blocks', () => {
+  const withTitle = (title) => FEATURE.replace('A player can move the camera with WASD', title);
+  const audience = 'Shoppers who buy in store.';
+  for (const title of ['A store manager can cancel an eligible order', 'A package manager can resolve versions', 'A customer service manager can issue a refund']) {
+    assert.deepEqual(checkFeature(withTitle(title), { audience }), { ok: true, kind: 'feature', title }, title);
+  }
+  const cases = {
+    'A developer can wire up input': /mentions "developer"/,
+    'A shopper can pay faster for engineers': /mentions "engineers"/,
+    'A camera system can pan': /technical actor/,
+  };
+  for (const [title, want] of Object.entries(cases)) {
+    const result = checkFeature(withTitle(title), { audience });
+    assert.equal(result.ok, true, title);
+    assert.match(result.warnings[0], want, title);
+  }
+  assert.equal(checkFeature(withTitle('A camera system can pan'), { audience: 'Engineers who tune cameras.' }).warnings, undefined);
+});
+
 test('feature: a developer persona passes when its epic is for developers', () => {
   const text = FEATURE.replace('A player can move the camera with WASD', 'A developer can preview a mod in the editor');
-  assert.equal(checkFeature(text, { audience: 'Developers who ship game mods.' }).ok, true);
-  assert.equal(checkFeature(text, { audience: 'Players who manage settlements.' }).ok, false);
-  assert.equal(checkFeature(text).ok, false, 'without the audience, a developer persona is not assumed');
+  assert.equal(checkFeature(text, { audience: 'Developers who ship game mods.' }).warnings, undefined);
+  assert.equal(checkFeature(text, { audience: 'Players who manage settlements.' }).warnings.length, 1);
+  assert.equal(checkFeature(text).warnings.length, 1, 'without the audience, a developer persona is worth a warning');
 
   const dir = fs.mkdtempSync(path.join(os.tmpdir(), 'cairn-structure-'));
   const draft = path.join(dir, 'feature.md');
   fs.writeFileSync(draft, text);
   const run = (...args) => spawnSync(process.execPath, [SCRIPT, 'feature', draft, ...args], { encoding: 'utf8' }).status;
   assert.equal(run('--for', 'Developers who ship game mods.'), 0);
-  assert.equal(run('--for', 'Players.'), 1);
-  assert.equal(run(), 1);
+  assert.equal(run('--for', 'Players.'), 0, 'a warning does not fail the check');
+  assert.equal(run(), 0);
   assert.equal(run('--for'), 2);
   assert.equal(run('--who', 'Developers'), 2);
   assert.equal(spawnSync(process.execPath, [SCRIPT, 'epic', draft, '--for', 'Developers'], { encoding: 'utf8' }).status, 2, 'only features take --for');

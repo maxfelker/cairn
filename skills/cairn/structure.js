@@ -7,10 +7,12 @@
 // the body.
 //
 //   node structure.js <kind> <draft.md>   (use - to read the draft from stdin)
-//   node structure.js feature <draft.md> --for <who the epic is for>
+//   node structure.js feature <draft.md> --for <the epic's persona names>
 //   node structure.js comment <draft.md>   a comment has no "# <title>" line
 //   node structure.js change <draft.md>    the description of a change for review
-//   exit 0  {"ok": true, "kind": "...", "title": "..."}
+//   exit 0  {"ok": true, "kind": "...", "title": "...", "warnings": ["..."]}
+//           "warnings" appears only when a draft may be written for the wrong
+//           reader. A warning never blocks: only the author knows the audience.
 //   exit 1  {"ok": false, "kind": "...", "problems": ["..."]}
 //   exit 2  wrong usage
 
@@ -22,20 +24,20 @@ const fs = require('node:fs');
 // case, using any of the listed names.
 const EPIC_SECTIONS = [
   { key: 'why', label: 'Why', names: ['why', 'why it matters', 'why this matters'] },
-  { key: 'who', label: 'Who it is for', names: ['who it is for', 'who this is for', 'who'] },
+  // Epics written before the Personas table keep their prose section.
+  { key: 'who', label: 'Personas', names: ['personas', 'who it is for', 'who this is for', 'who'] },
   { key: 'in', label: 'In scope', names: ['in scope', 'scope'] },
   { key: 'out', label: 'Out of scope', names: ['out of scope', 'non-goals'] },
   { key: 'success', label: 'What success looks like', names: ['what success looks like', 'success'] },
   { key: 'criteria', label: 'Acceptance Criteria', names: ['acceptance criteria'] },
 ];
 
-// Personas experience a capability. System parts never do. The people who
-// build a product are a persona only when the product is for them, as with a
-// developer tool: the epic's "Who it is for" says so. The gate is against
-// technology as the goal, not against developers as users.
-const BUILDERS = /^(developers?|devs?)$/i;
-const NAMES_BUILDERS = /\b(developers?|devs?)\b/i;
-const SYSTEM_WORDS = /\b(system|component|module|service|manager|framework|foundation|infrastructure|pipeline|backend|api)\b/i;
+// Capabilities are written for whoever uses the product. A draft that talks
+// about the people building it, or names a technical part as its actor, may
+// have lost sight of that reader. These words can be right, as in a developer
+// tool or a product delivered through a package manager, so they only warn.
+const BUILDERS = /\b(developers?|devs?|engineers?|programmers?)\b/i;
+const TECHNICAL_ACTORS = /\b(system|component|module|framework|foundation|infrastructure|pipeline|backend|api)\b/i;
 
 function normalize(heading) {
   return heading.toLowerCase().replace(/[^a-z\s-]/g, '').replace(/\s+/g, ' ').trim();
@@ -67,28 +69,70 @@ function parse(text) {
 // broken down, its criteria become references to its features.
 const ITEM_REF = /^(#\d+|[A-Z][A-Z0-9]+-\d+)$/;
 
-// Check one capability statement: "A <persona> can <capability>". `what`
-// names it in messages. `audience` is the epic's "Who it is for" text, when
-// known. Returns a problem string, or null.
-function capabilityProblem(text, what, audience = '') {
-  const m = /^an?\s+(.+?)\s+can\s+(\S.*)$/i.exec(text);
-  if (!m) {
+// Check the shape of one capability statement: "A <persona> can
+// <capability>". `what` names it in messages. Returns a problem string, or null.
+function capabilityProblem(text, what) {
+  if (!/^an?\s+.+?\s+can\s+\S/i.test(text)) {
     return `${what} "${text}" is not a capability. Write it as "A <persona> can <do or perceive something>".`;
   }
-  const persona = m[1];
-  if (BUILDERS.test(persona) && !NAMES_BUILDERS.test(audience)) {
-    return `${what} "${text}" uses "${persona}" as the persona, but the epic's "Who it is for" does not name developers. If the epic is for developers, say so there. Otherwise name who experiences the capability, or move this work to a task.`;
+  return null;
+}
+
+// Say when a well-shaped capability may be written for the people building
+// the product instead of its users. `audience` names the epic's personas,
+// when known. Returns a warning string, or null.
+function capabilityWarning(text, what, audience = '') {
+  const m = /^an?\s+(.+?)\s+can\s+(\S.*)$/i.exec(text);
+  if (!m || BUILDERS.test(audience)) return null;
+  const builder = BUILDERS.exec(text);
+  if (builder) {
+    return `${what} "${text}" mentions "${builder[0]}", but the epic's personas do not. Keep it only if they are the product's users.`;
   }
-  if (SYSTEM_WORDS.test(persona)) {
-    return `${what} "${text}" names a system part ("${persona}") as the persona. Name the person or actor who experiences it.`;
+  const actor = TECHNICAL_ACTORS.exec(m[1]);
+  if (actor) {
+    return `${what} "${text}" has a technical actor ("${m[1]}"). Keep it only if that is who experiences the capability.`;
   }
   return null;
 }
 
 // Check one epic acceptance criterion. Returns a problem string, or null.
-function criterionProblem(item, audience = '') {
+function criterionProblem(item) {
   if (ITEM_REF.test(item)) return null;
-  return capabilityProblem(item, 'Acceptance criterion', audience);
+  return capabilityProblem(item, 'Acceptance criterion');
+}
+
+function criterionWarning(item, audience = '') {
+  if (ITEM_REF.test(item)) return null;
+  return capabilityWarning(item, 'Acceptance criterion', audience);
+}
+
+// A passing result, with its warnings when there are any.
+function passed(kind, title, warnings) {
+  return warnings.length ? { ok: true, kind, title, warnings } : { ok: true, kind, title };
+}
+
+// Cells of one Markdown table row, or null when the line is not a row.
+function tableCells(line) {
+  const row = line.trim();
+  if (!row.startsWith('|')) return null;
+  return row.replace(/^\|/, '').replace(/(?<!\\)\|$/, '').split(/(?<!\\)\|/).map((c) => c.trim());
+}
+
+// Read a Personas table: a "Persona" column, then "Jobs to be done".
+function personaTable(section) {
+  const rows = section.lines.map(tableCells).filter(Boolean);
+  const header = rows[0] ? rows[0].map((c) => c.toLowerCase()) : [];
+  if (header.length !== 2 || header[0] !== 'persona' || header[1] !== 'jobs to be done') {
+    return { problem: 'The "Personas" section must be a table with the columns "Persona" and "Jobs to be done".' };
+  }
+  const people = rows.slice(2).filter((r) => r.some((c) => c !== ''));
+  if (people.length === 0) {
+    return { problem: 'The "Personas" table has no rows. Add one row for each persona.' };
+  }
+  if (people.some((r) => r.length !== 2 || !r[0] || !r[1])) {
+    return { problem: 'Each row of the "Personas" table needs a persona and its jobs to be done.' };
+  }
+  return { names: people.map((r) => r[0]).join(', ') };
 }
 
 function listItems(section) {
@@ -106,15 +150,18 @@ const FEATURE_SECTIONS = [
 // A feature is one capability a persona gains. Its title is the capability
 // statement, its body opens with plain prose restating it, and it lists the
 // expected behavior and its acceptance criteria (the tasks that deliver it).
-// `audience` is its epic's "Who it is for" text.
+// `audience` names its epic's personas.
 function checkFeature(text, { audience = '' } = {}) {
   const problems = [];
+  const warnings = [];
   const { title, intro, sections } = parse(text);
 
   if (!title) {
     problems.push('The draft must start with a "# <title>" line.');
   } else {
-    const problem = capabilityProblem(title, 'The title', audience);
+    const problem = capabilityProblem(title, 'The title');
+    const warning = capabilityWarning(title, 'The title', audience);
+    if (warning) warnings.push(warning);
     if (problem) problems.push(problem);
     else if (/\b(and|or)\b/i.test(title.replace(/^an?\s+.+?\s+can\s+/i, ''))) {
       problems.push(`The title "${title}" has more than one capability ("and" or "or"). Split it into separate features.`);
@@ -142,7 +189,7 @@ function checkFeature(text, { audience = '' } = {}) {
 
   return problems.length
     ? { ok: false, kind: 'feature', problems }
-    : { ok: true, kind: 'feature', title };
+    : passed('feature', title, warnings);
 }
 
 const TASK_SECTIONS = [
@@ -190,6 +237,7 @@ function checkTask(text) {
 
 function checkEpic(text) {
   const problems = [];
+  const warnings = [];
   const { title, sections } = parse(text);
 
   if (!title) problems.push('The draft must start with a "# <title>" line.');
@@ -216,16 +264,23 @@ function checkEpic(text) {
     if (items.length === 0) {
       problems.push('"Acceptance Criteria" has no items. List each capability as "- [ ] A <persona> can …".');
     }
-    const audience = found.who ? found.who.lines.join('\n') : '';
+    let audience = found.who ? found.who.lines.join('\n') : '';
+    if (found.who && found.who.name === 'personas' && audience.trim()) {
+      const table = personaTable(found.who);
+      if (table.problem) problems.push(table.problem);
+      else audience = table.names;
+    }
     for (const item of items) {
-      const problem = criterionProblem(item, audience);
+      const problem = criterionProblem(item);
       if (problem) problems.push(problem);
+      const warning = criterionWarning(item, audience);
+      if (warning) warnings.push(warning);
     }
   }
 
   return problems.length
     ? { ok: false, kind: 'epic', problems }
-    : { ok: true, kind: 'epic', title };
+    : passed('epic', title, warnings);
 }
 
 // A comment is one of three kinds, named on its first line as
@@ -358,7 +413,7 @@ function main(argv) {
   const [kind, file, ...rest] = argv;
   const audience = kind === 'feature' && rest.length === 2 && rest[0] === '--for' ? rest[1] : null;
   if (!CHECKS[kind] || !file || (rest.length && audience === null)) {
-    process.stderr.write(`usage: structure.js <${Object.keys(CHECKS).join('|')}> <draft.md>   (feature also takes --for <who the epic is for>)\n`);
+    process.stderr.write(`usage: structure.js <${Object.keys(CHECKS).join('|')}> <draft.md>   (feature also takes --for <the epic's persona names>)\n`);
     return 2;
   }
   let text;

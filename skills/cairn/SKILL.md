@@ -235,6 +235,13 @@ node "${CLAUDE_SKILL_DIR}/structure.js" epic - <<'CAIRN_DRAFT'
 CAIRN_DRAFT
 ```
 
+`structure.js` can return `warnings` with `ok: true` when a draft seems
+written for the people building the product rather than its users. A warning
+never blocks saving. Reread the line against the epic's `## Personas`. Reword it if
+it drifted into engineering concerns, such as "make it easier for developers"
+on a product that is not for developers. Keep it if that persona really is the
+user. Tell the user about any warning you kept.
+
 ### Plan an idea
 
 Use this when the user describes an idea, a product vision, a transcript, or
@@ -249,7 +256,9 @@ epic").
    persona or outcome. Use these sections, in this order:
    - `# <title>`: a short name for the outcome.
    - `## Why`: why this matters.
-   - `## Who it is for`: the personas who benefit.
+   - `## Personas`: a table with the columns `Persona` and `Jobs to be done`,
+     with one row per persona. List each persona's jobs as short verb
+     phrases, such as "Complete in-person sales, process eligible returns".
    - `## In scope`, then `## Out of scope`.
    - `## What success looks like`.
    - `## Acceptance Criteria`: always last. List the feature-level
@@ -261,7 +270,7 @@ epic").
    that persona gains, never technology for its own sake. Never name a
    system, component, or foundation as a criterion. The people building the
    product are a persona only when the product is for them, as with a
-   developer tool, and then `## Who it is for` must say so.
+   developer tool, and then `## Personas` must list them.
    Use only what the user said, plus reasonable inferences. If you can't
    tell who the work is for, or what success means, ask one short question
    before drafting.
@@ -294,7 +303,7 @@ whoever experiences it.
      a system instead of an action, split it.
    - **A persona is someone or something that directly experiences the
      capability:** a customer, a player, an enemy AI, or a surface they
-     perceive. Take personas from the epic's `## Who it is for`. Developers
+     perceive. Take personas from the epic's `## Personas`. Developers
      are a persona only when the epic is for developers. Most products are
      not, but a developer tool is.
    - **The capability is the goal, never the technology.** Reject a feature
@@ -315,8 +324,8 @@ whoever experiences it.
    the capability in plain language; `## Expected behavior`, describing
    what the persona sees when it works; and `## Acceptance Criteria`,
    listing the tasks needed to deliver it, with any substrate tasks first.
-   Pipe each draft to `structure.js feature - --for "<who it is for>"`,
-   quoting the epic's `## Who it is for` text, and fix every problem.
+   Pipe each draft to `structure.js feature - --for "<persona names>"`,
+   using the names in the epic's `## Personas`, and fix every problem.
 4. **Save each feature.** Pipe it to
    `save-item --kind feature --parent <epic> --file -`. This creates and
    links a new feature, or updates the existing one with that title.
@@ -418,8 +427,8 @@ capability: concrete engineering steps a person or an agent can pick up.
    one reference per task, in order, written the way the provider reference
    says to reference an item. Keep the rest of the feature as it is,
    including its title. Check it with
-   `structure.js feature - --for "<who it is for>"`, quoting the parent
-   epic's `## Who it is for` (read it with `get-item`), and save it with
+   `structure.js feature - --for "<persona names>"`, using the names in the
+   parent epic's `## Personas` (read it with `get-item`), and save it with
    `save-item --kind feature`, adding `--parent <parent>` when `get-item`
    reported one.
 9. **Reply briefly.** List the tasks in order as references, marking each as
